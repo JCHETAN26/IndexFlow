@@ -19,11 +19,12 @@ interface SearchResponse {
   results: Result[];
 }
 
-type Mode = "keyword" | "semantic";
+type Mode = "keyword" | "semantic" | "hybrid";
 
 const MODES: { id: Mode; label: string }[] = [
   { id: "keyword", label: "Keyword" },
   { id: "semantic", label: "Semantic" },
+  { id: "hybrid", label: "Hybrid" },
 ];
 
 export default function SearchPage() {

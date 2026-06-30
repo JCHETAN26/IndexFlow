@@ -58,5 +58,30 @@
     "fileName": "realtime-collab.md",
     "title": "Realtime Collaborative Editing",
     "content": "Multiple people can edit the same document at once. Concurrent changes are merged with a conflict-free replicated data type so no edit is lost and order does not matter. Live cursors and presence show who is in the document. Offline edits sync automatically when the client reconnects."
+  },
+  {
+    "fileName": "postgres-config-tuning.md",
+    "title": "Postgres Server Tuning",
+    "content": "Key Postgres server settings include max_connections, shared_buffers, and work_mem. We raised max_connections to 200 and shared_buffers to 4GB for the primary. Setting work_mem too high can exhaust memory when many sessions sort at once, so we kept it modest and relied on a connection pooler in front of the database."
+  },
+  {
+    "fileName": "failed-payments.md",
+    "title": "Handling Failed Payments",
+    "content": "When a customer's card is declined or has insufficient funds, the charge fails. We retry the payment a few times over several days, notify the customer by email, and pause the subscription after repeated failures. Most recovered payments succeed on the second attempt once the customer updates their card."
+  },
+  {
+    "fileName": "billing-webhooks.md",
+    "title": "Billing Webhook Events",
+    "content": "Stripe sends events such as invoice.payment_failed and invoice.paid to our billing webhook endpoint. We verify the signature, enqueue the event, and update subscription state. The invoice.payment_failed handler kicks off the dunning flow, while invoice.paid clears any past-due flag on the account."
+  },
+  {
+    "fileName": "error-code-reference.md",
+    "title": "Error Code Reference",
+    "content": "Reference of platform error codes. ERR_AUTH_4010 invalid credentials. ERR_AUTH_4011 token revoked. ERR_RATE_4029 too many requests. ERR_QUOTA_4096 storage quota exceeded for the workspace. ERR_DB_5001 transaction deadlock. ERR_DB_5002 statement timeout. ERR_IO_5100 object storage unreachable. ERR_FMT_4220 unsupported file format. ERR_NET_5200 upstream connection reset. ERR_VAL_4000 request body failed validation."
+  },
+  {
+    "fileName": "storage-limits.md",
+    "title": "Workspace Storage Limits",
+    "content": "Every workspace includes a storage quota. When you exceed your storage limit, new uploads are blocked until you delete files or upgrade the plan. We show a banner as you approach the limit, and large attachments count against the quota the moment they finish uploading."
   }
 ]

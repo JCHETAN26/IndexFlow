@@ -18,5 +18,12 @@
   { "q": "export a huge table to csv", "relevant": ["csv-export.md"], "kind": "exact" },
   { "q": "let several people edit one document together", "relevant": ["realtime-collab.md"], "kind": "paraphrase" },
   { "q": "merge conflicting edits without losing changes", "relevant": ["realtime-collab.md"], "kind": "paraphrase" },
-  { "q": "difference between keyword and semantic search", "relevant": ["fulltext-vs-vector.md"], "kind": "exact" }
+  { "q": "difference between keyword and semantic search", "relevant": ["fulltext-vs-vector.md"], "kind": "exact" },
+  { "q": "max_connections", "relevant": ["postgres-config-tuning.md"], "kind": "exact" },
+  { "q": "shared_buffers and work_mem", "relevant": ["postgres-config-tuning.md"], "kind": "exact" },
+  { "q": "tune postgres memory settings", "relevant": ["postgres-config-tuning.md"], "kind": "paraphrase" },
+  { "q": "invoice.payment_failed", "relevant": ["billing-webhooks.md"], "kind": "exact" },
+  { "q": "the customer's card was declined", "relevant": ["failed-payments.md"], "kind": "paraphrase" },
+  { "q": "ERR_QUOTA_4096", "relevant": ["error-code-reference.md"], "kind": "exact" },
+  { "q": "ERR_DB_5002", "relevant": ["error-code-reference.md"], "kind": "exact" }
 ]
