@@ -31,3 +31,47 @@ jobs:
 
       - name: Build (type-checks)
         run: pnpm --filter @indexflow/web build
+
+  eval:
+    name: eval
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: indexflow
+          POSTGRES_PASSWORD: indexflow
+          POSTGRES_DB: indexflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U indexflow -d indexflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The eval/backfill scripts load apps/web/.env via --env-file; create it in CI.
+      - name: Write env file
+        run: echo "DATABASE_URL=${DATABASE_URL}" > apps/web/.env
+
+      - name: Apply migrations
+        run: pnpm --filter @indexflow/web prisma migrate deploy
+
+      - name: Run retrieval evaluation (quality gate)
+        run: pnpm --filter @indexflow/web eval

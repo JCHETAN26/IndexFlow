@@ -1,0 +1,22 @@
+[
+  { "q": "mobile editor latency", "relevant": ["mobile-editor-latency.md"], "kind": "exact" },
+  { "q": "typing feels laggy on my phone", "relevant": ["mobile-editor-latency.md"], "kind": "paraphrase" },
+  { "q": "ERR_AUTH_401", "relevant": ["auth-token-expiry.md"], "kind": "exact" },
+  { "q": "my login session keeps expiring", "relevant": ["auth-token-expiry.md"], "kind": "paraphrase" },
+  { "q": "ERR_TIMEOUT_504", "relevant": ["search-timeout.md"], "kind": "exact" },
+  { "q": "search requests time out under heavy load", "relevant": ["search-timeout.md"], "kind": "paraphrase" },
+  { "q": "database connection pool exhausted", "relevant": ["db-connection-pool.md"], "kind": "exact" },
+  { "q": "queries hang when too many users connect at once", "relevant": ["db-connection-pool.md"], "kind": "paraphrase" },
+  { "q": "resize uploaded images", "relevant": ["image-upload-pipeline.md"], "kind": "exact" },
+  { "q": "generate small previews for photos", "relevant": ["image-upload-pipeline.md"], "kind": "paraphrase" },
+  { "q": "dark mode", "relevant": ["dark-mode-theming.md"], "kind": "exact" },
+  { "q": "follow the system color scheme automatically", "relevant": ["dark-mode-theming.md"], "kind": "paraphrase" },
+  { "q": "retry failed webhooks", "relevant": ["webhook-retries.md"], "kind": "exact" },
+  { "q": "avoid processing the same event twice", "relevant": ["webhook-retries.md"], "kind": "paraphrase" },
+  { "q": "rate limiting", "relevant": ["rate-limiting.md"], "kind": "exact" },
+  { "q": "client got too many requests 429", "relevant": ["rate-limiting.md"], "kind": "paraphrase" },
+  { "q": "export a huge table to csv", "relevant": ["csv-export.md"], "kind": "exact" },
+  { "q": "let several people edit one document together", "relevant": ["realtime-collab.md"], "kind": "paraphrase" },
+  { "q": "merge conflicting edits without losing changes", "relevant": ["realtime-collab.md"], "kind": "paraphrase" },
+  { "q": "difference between keyword and semantic search", "relevant": ["fulltext-vs-vector.md"], "kind": "exact" }
+]

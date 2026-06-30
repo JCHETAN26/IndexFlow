@@ -1,0 +1,62 @@
+[
+  {
+    "fileName": "mobile-editor-latency.md",
+    "title": "Mobile Editor Performance Notes",
+    "content": "Several users reported typing latency on mobile editor sessions during peak hours. The lag was worst when documents exceeded 2,000 blocks. Each keystroke triggered a full re-render of the block tree, producing input delays of 200-400ms on low-end Android phones. We introduced incremental rendering and debounced autosave; p95 keystroke-to-paint dropped from 380ms to 60ms."
+  },
+  {
+    "fileName": "db-connection-pool.md",
+    "title": "Database Connection Pooling",
+    "content": "When the service runs out of free database connections, new queries wait in a queue and p99 latency spikes. This happened whenever a traffic burst opened more concurrent sessions than the pool allowed. Raising the pool size and adding a short acquire timeout reduced query wait time dramatically and stopped the cascading stalls."
+  },
+  {
+    "fileName": "auth-token-expiry.md",
+    "title": "Auth Token Expiry",
+    "content": "ERR_AUTH_401 means the bearer token has expired. The client should refresh the session using the refresh token and retry the original request once. Access tokens live for 15 minutes; refresh tokens for 30 days. If the refresh token is also expired, the user must sign in again."
+  },
+  {
+    "fileName": "search-timeout.md",
+    "title": "Search Service Timeouts",
+    "content": "ERR_TIMEOUT_504 indicates the upstream search service did not respond within the request deadline. This usually appears under heavy load when query latency exceeds the gateway timeout. Clients should retry with exponential backoff. Raising the per-shard timeout and adding a circuit breaker reduced the error rate."
+  },
+  {
+    "fileName": "image-upload-pipeline.md",
+    "title": "Image Upload Pipeline",
+    "content": "Uploaded photos are resized into several sizes and a small thumbnail is generated for list views. The original and derivatives are written to object storage. Resizing runs off the request path so uploads return quickly. Very large images are downscaled before processing to bound memory usage."
+  },
+  {
+    "fileName": "dark-mode-theming.md",
+    "title": "Dark Mode and Theming",
+    "content": "The interface ships light and dark themes built from semantic color tokens. By default the app follows the operating system color scheme preference and switches automatically. Users can override the choice. We audited every surface for sufficient contrast so text stays readable in both themes."
+  },
+  {
+    "fileName": "webhook-retries.md",
+    "title": "Webhook Delivery and Retries",
+    "content": "Outbound webhooks are retried with exponential backoff when the receiver returns an error or times out. Every delivery carries an idempotency key so receivers can safely ignore duplicates caused by retries. After several failed attempts the event is moved to a dead-letter queue for manual inspection."
+  },
+  {
+    "fileName": "fulltext-vs-vector.md",
+    "title": "Keyword vs Semantic Retrieval",
+    "content": "Keyword full-text search matches exact terms and excels at error codes, identifiers, and rare strings, but misses paraphrases. Vector search compares embeddings and captures meaning, so it finds relevant passages even when no words overlap, but it can miss exact tokens. Hybrid retrieval blends both to get the strengths of each."
+  },
+  {
+    "fileName": "onboarding-checklist.md",
+    "title": "New User Onboarding",
+    "content": "First-run onboarding walks a new user through creating a workspace, inviting teammates, and importing existing documents. A progress checklist nudges people toward the activation milestone of running their first search. Completing the checklist measurably improves week-one retention."
+  },
+  {
+    "fileName": "rate-limiting.md",
+    "title": "API Rate Limiting",
+    "content": "Each API client is limited using a token bucket. When the bucket is empty the gateway returns HTTP 429 Too Many Requests with a Retry-After header. Limits are higher for authenticated traffic. Bursts are absorbed by the bucket capacity while the long-run rate stays bounded."
+  },
+  {
+    "fileName": "csv-export.md",
+    "title": "CSV Export of Large Datasets",
+    "content": "Exporting a large table to CSV streams rows directly to the response instead of buffering the whole file in memory. The export runs in pages so a multi-million row table can be downloaded without exhausting server memory. Progress is reported to the user while the file streams."
+  },
+  {
+    "fileName": "realtime-collab.md",
+    "title": "Realtime Collaborative Editing",
+    "content": "Multiple people can edit the same document at once. Concurrent changes are merged with a conflict-free replicated data type so no edit is lost and order does not matter. Live cursors and presence show who is in the document. Offline edits sync automatically when the client reconnects."
+  }
+]

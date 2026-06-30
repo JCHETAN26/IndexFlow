@@ -39,6 +39,21 @@ To embed documents indexed before embeddings existed:
 pnpm --filter @indexflow/web embed:backfill
 ```
 
+## Evaluation
+
+Retrieval quality is measured, not guessed. A labeled query set
+(`apps/web/eval/`) is scored for recall@k and MRR against keyword and semantic search:
+
+```bash
+pnpm --filter @indexflow/web eval
+```
+
+The runner seeds a fixture corpus inside a rolled-back transaction (it never touches
+your data) and prints a comparison table plus a pass/fail quality gate. CI runs it on
+every PR, so "green" means retrieval didn't regress. Current numbers: semantic R@1 95%
+vs keyword 35% — keyword is brittle because `plainto_tsquery` ANDs terms, which is the
+motivation for the hybrid blend coming in Step 4.
+
 ## Development workflow
 
 `main` is protected. All changes go through a pull request and must pass CI (`build`,
