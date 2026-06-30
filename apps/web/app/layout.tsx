@@ -24,6 +24,9 @@ export default function RootLayout({
               <Link href="/" className="hover:text-neutral-900">
                 Search
               </Link>
+              <Link href="/documents" className="hover:text-neutral-900">
+                Documents
+              </Link>
               <Link href="/upload" className="hover:text-neutral-900">
                 Upload
               </Link>
