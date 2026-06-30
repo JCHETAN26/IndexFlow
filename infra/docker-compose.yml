@@ -1,0 +1,23 @@
+name: indexflow
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: indexflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: indexflow
+      POSTGRES_PASSWORD: indexflow
+      POSTGRES_DB: indexflow
+    ports:
+      - "5440:5432"
+    volumes:
+      - indexflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U indexflow -d indexflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  indexflow_pgdata:
