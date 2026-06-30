@@ -6,11 +6,11 @@ Vector search understands meaning but misses exact strings (error codes, API nam
 config keys). Keyword search nails exact strings but misses meaning. IndexFlow blends
 both into one ranked result list with highlighted snippets.
 
-> Status: **Step 2 — semantic search.** Upload `.md`/`.txt`, chunk + embed + index
-> synchronously, and search in two modes: **keyword** (Postgres full-text, highlighted
-> snippets) and **semantic** (pgvector cosine similarity over local embeddings). An
-> evaluation harness, hybrid ranking, and the real infra (Elasticsearch, MinIO, BullMQ)
-> land in later steps. See [`plan.md`](./plan.md).
+> Status: **Step 4 — hybrid search.** Upload `.md`/`.txt`, chunk + embed + index
+> synchronously, and search in three modes: **keyword** (Postgres full-text, highlighted
+> snippets), **semantic** (pgvector cosine over local embeddings), and **hybrid** (a
+> measured blend of both). A live evaluation page (`/eval`) scores all three. The real
+> infra (Elasticsearch, MinIO, BullMQ) lands in later steps. See [`plan.md`](./plan.md).
 
 ## Stack (current)
 
@@ -29,8 +29,9 @@ pnpm db:migrate     # apply Prisma migrations
 pnpm dev            # http://localhost:3000
 ```
 
-Then open `/upload` to index a file and `/` to search it. Toggle **Keyword** vs
-**Semantic** on the search page.
+Then open `/upload` to index a file and `/` to search it. Toggle **Keyword**,
+**Semantic**, or **Hybrid** on the search page, and open `/eval` to run the retrieval
+benchmark in the browser.
 
 The first embedding call downloads the model (~25 MB) once, then runs in-process.
 To embed documents indexed before embeddings existed:
@@ -49,10 +50,14 @@ pnpm --filter @indexflow/web eval
 ```
 
 The runner seeds a fixture corpus inside a rolled-back transaction (it never touches
-your data) and prints a comparison table plus a pass/fail quality gate. CI runs it on
-every PR, so "green" means retrieval didn't regress. Current numbers: semantic R@1 95%
-vs keyword 35% — keyword is brittle because `plainto_tsquery` ANDs terms, which is the
-motivation for the hybrid blend coming in Step 4.
+your data) and prints a comparison table, a hybrid weight sweep, and a pass/fail quality
+gate. The same harness backs the `/eval` page. CI runs it on every PR, so "green" means
+retrieval didn't regress.
+
+Current numbers (MRR): keyword 0.48, semantic 0.96, **hybrid 0.98**. Keyword is brittle
+because `plainto_tsquery` ANDs terms; semantic handles paraphrases but can misrank an
+exact identifier when a doc's embedding is diluted (e.g. a long error-code reference) —
+hybrid fixes both. The blend weight (0.5) is chosen by the sweep, not guessed.
 
 ## Development workflow
 

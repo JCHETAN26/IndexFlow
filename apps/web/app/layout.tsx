@@ -27,6 +27,9 @@ export default function RootLayout({
               <Link href="/upload" className="hover:text-neutral-900">
                 Upload
               </Link>
+              <Link href="/eval" className="hover:text-neutral-900">
+                Eval
+              </Link>
             </nav>
           </div>
         </header>
