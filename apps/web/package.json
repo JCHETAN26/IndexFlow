@@ -9,6 +9,7 @@
     "lint": "next lint",
     "prisma": "prisma",
     "embed:backfill": "tsx --env-file=.env scripts/backfill-embeddings.ts",
+    "eval": "tsx --env-file=.env eval/run.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {
