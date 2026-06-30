@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    env:
+      # Build never connects to the DB, but Prisma + Next want the var present.
+      DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @indexflow/web prisma generate
+
+      - name: Build (type-checks)
+        run: pnpm --filter @indexflow/web build
