@@ -1,0 +1,13 @@
+{
+  "name": "indexflow",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @indexflow/web dev",
+    "build": "pnpm --filter @indexflow/web build",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "pnpm --filter @indexflow/web prisma migrate dev",
+    "db:generate": "pnpm --filter @indexflow/web prisma generate"
+  }
+}
