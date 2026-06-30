@@ -14,18 +14,27 @@ interface Result {
 
 interface SearchResponse {
   query: string;
+  mode: Mode;
   latencyMs: number;
   results: Result[];
 }
 
+type Mode = "keyword" | "semantic";
+
+const MODES: { id: Mode; label: string }[] = [
+  { id: "keyword", label: "Keyword" },
+  { id: "semantic", label: "Semantic" },
+];
+
 export default function SearchPage() {
   const [q, setQ] = useState("");
+  const [mode, setMode] = useState<Mode>("keyword");
   const [data, setData] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const runSearch = useCallback(async (query: string) => {
+  const runSearch = useCallback(async (query: string, searchMode: Mode) => {
     if (!query.trim()) {
       setData(null);
       setError(null);
@@ -34,7 +43,9 @@ export default function SearchPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(
+        `/api/search?q=${encodeURIComponent(query)}&mode=${searchMode}`,
+      );
       if (!res.ok) throw new Error(`Search failed (${res.status})`);
       setData(await res.json());
     } catch (e) {
@@ -48,7 +59,12 @@ export default function SearchPage() {
   const onChange = (value: string) => {
     setQ(value);
     if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(() => runSearch(value), 200);
+    debounce.current = setTimeout(() => runSearch(value, mode), 200);
+  };
+
+  const onModeChange = (next: Mode) => {
+    setMode(next);
+    if (q.trim()) runSearch(q, next);
   };
 
   return (
@@ -57,7 +73,7 @@ export default function SearchPage() {
         Search your workspace
       </h1>
       <p className="mt-1 text-sm text-neutral-500">
-        Keyword search over indexed files. Semantic + hybrid coming in the next steps.
+        Keyword (exact terms) and semantic (meaning) search. Hybrid blend coming next.
       </p>
 
       <div className="mt-6">
@@ -66,9 +82,29 @@ export default function SearchPage() {
           type="text"
           value={q}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Try: mobile editor latency"
+          placeholder={
+            mode === "semantic"
+              ? "Try: typing feels slow on phones"
+              : "Try: mobile editor latency"
+          }
           className="w-full rounded-lg border border-neutral-300 px-4 py-3 text-base outline-none focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10"
         />
+      </div>
+
+      <div className="mt-3 inline-flex rounded-lg border border-neutral-200 p-0.5">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => onModeChange(m.id)}
+            className={`rounded-md px-3 py-1 text-sm transition-colors ${
+              mode === m.id
+                ? "bg-neutral-900 text-white"
+                : "text-neutral-600 hover:text-neutral-900"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
       </div>
 
       <div className="mt-3 h-5 text-xs text-neutral-500">

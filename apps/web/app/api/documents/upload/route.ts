@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { chunkText } from "@/lib/chunk";
+import { embed, toVectorLiteral } from "@/lib/embed";
 
 export const runtime = "nodejs";
 
@@ -53,23 +54,40 @@ export async function POST(req: NextRequest) {
 
   const title = file.name.replace(/\.[^.]+$/, "");
 
-  // Step 1: synchronous ingestion inside the request. Becomes a BullMQ job in Step 6.
-  const document = await prisma.document.create({
-    data: {
-      title,
-      fileName: file.name,
-      fileType: ext,
-      status: "INDEXED",
-      indexedAt: new Date(),
-      chunks: {
-        create: chunks.map((c) => ({
-          chunkIndex: c.index,
-          content: c.content,
-          tokenCount: c.tokenCount,
-        })),
+  // Embed before writing anything, so a model failure leaves no partial document.
+  const vectors = await embed(chunks.map((c) => c.content));
+
+  // Step 1+2: synchronous ingestion inside the request. Becomes a BullMQ job in Step 6.
+  // Chunks are inserted via raw SQL because the pgvector `embedding` column is an
+  // Unsupported type that the Prisma client can't write directly.
+  const document = await prisma.$transaction(async (tx) => {
+    const doc = await tx.document.create({
+      data: {
+        title,
+        fileName: file.name,
+        fileType: ext,
+        status: "INDEXED",
+        indexedAt: new Date(),
       },
-    },
-    select: { id: true, title: true, fileName: true, fileType: true },
+      select: { id: true, title: true, fileName: true, fileType: true },
+    });
+
+    for (let i = 0; i < chunks.length; i++) {
+      await tx.$executeRaw`
+        INSERT INTO document_chunks (id, "documentId", "chunkIndex", content, "tokenCount", embedding, "createdAt")
+        VALUES (
+          gen_random_uuid(),
+          ${doc.id}::uuid,
+          ${chunks[i].index},
+          ${chunks[i].content},
+          ${chunks[i].tokenCount},
+          ${toVectorLiteral(vectors[i])}::vector,
+          now()
+        )
+      `;
+    }
+
+    return doc;
   });
 
   return NextResponse.json(
