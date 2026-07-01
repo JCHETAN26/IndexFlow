@@ -79,8 +79,9 @@ clearest single view of what the project does._
 
 IndexFlow is a single Next.js application (UI + API routes) backed by one Postgres
 database that does double duty: full-text search **and** vector search (via the
-`pgvector` extension). There is no separate search cluster or object store yet — that's
-deliberate for the current step (see [Design decisions](#design-decisions-faq)).
+`pgvector` extension). Original files are stored in **MinIO** (S3-compatible object
+storage). There is no separate search cluster yet — Elasticsearch arrives in Step 6c
+(see [Design decisions](#design-decisions-faq)).
 
 ### Ingestion pipeline
 
@@ -88,10 +89,11 @@ deliberate for the current step (see [Design decisions](#design-decisions-faq)).
 flowchart LR
     A[Browser /upload] -->|multipart file| B[POST /api/documents/upload]
     B --> C{validate type & size}
-    C -->|.md/.txt, <=5MB| D[chunkText]
+    C -->|.md/.txt, <=5MB| M[putObject → MinIO<br/>original file]
+    M --> D[chunkText]
     D --> E[embed chunks<br/>all-MiniLM-L6-v2]
     E --> F[(Postgres)]
-    F --> G[documents row]
+    F --> G[documents row<br/>+ storageKey]
     F --> H[document_chunks rows<br/>content + tsvector + embedding]
 ```
 
@@ -122,6 +124,7 @@ flowchart LR
 | Language | **TypeScript** (strict) | Typed end to end |
 | Styling | **Tailwind CSS v4** | Fast, consistent styling with zero custom CSS framework |
 | Database | **PostgreSQL 16** + **pgvector** | One store for both full-text and vector search |
+| Object storage | **MinIO** (S3-compatible) | Stores the original uploaded files |
 | ORM | **Prisma 6** | Typed schema + migrations; raw SQL where pgvector needs it |
 | Embeddings | **Transformers.js** (`all-MiniLM-L6-v2`, 384-dim) | Real semantic vectors, in-process, **no API key**, runs in CI |
 | Tooling | **pnpm** workspace, **tsx** | Workspace scripts; run TS scripts without a build step |
@@ -142,13 +145,15 @@ indexflow/
 │   │   ├── eval/page.tsx          # "/eval"      live retrieval benchmark
 │   │   ├── globals.css            # Tailwind import + <mark> styles
 │   │   └── api/
-│   │       ├── documents/upload/route.ts   # POST  upload + synchronous index
+│   │       ├── documents/upload/route.ts   # POST  upload → MinIO + synchronous index
 │   │       ├── documents/route.ts          # GET   list documents
-│   │       ├── documents/[id]/route.ts     # DELETE a document (cascade)
+│   │       ├── documents/[id]/route.ts     # DELETE a document (cascade + storage)
+│   │       ├── documents/[id]/file/route.ts# GET   stream the original file
 │   │       ├── search/route.ts             # GET   keyword | semantic | hybrid
 │   │       └── eval/route.ts               # GET   run evaluation, return report
 │   ├── lib/
 │   │   ├── prisma.ts              # PrismaClient singleton
+│   │   ├── storage.ts            # MinIO (S3) object storage
 │   │   ├── chunk.ts               # text → overlapping chunks
 │   │   ├── embed.ts               # local embedding model wrapper
 │   │   └── hybrid.ts              # pure keyword+semantic blend
@@ -179,11 +184,12 @@ BullMQ worker) and `packages/shared` can be added in Step 6 without restructurin
 
 ### Infrastructure (`infra/docker-compose.yml`)
 
-One service: Postgres using the **`pgvector/pgvector:pg16`** image, so the vector
-extension is available without a custom build. It is published on host port **5440**
-(to avoid colliding with a local Postgres on 5432), with a named volume for
-persistence and a healthcheck. The compose project is named `indexflow` so it never
-touches your other containers.
+Two services. **Postgres** uses the **`pgvector/pgvector:pg16`** image (vector extension
+available without a custom build), published on host port **5440** to avoid colliding
+with a local Postgres on 5432, with a named volume and a healthcheck. **MinIO**
+(S3-compatible object storage) runs the S3 API on host port **9100** and its web console
+on **9101**. Both use named volumes; the compose project is named `indexflow` so it
+never touches your other containers.
 
 ### Data model (`prisma/schema.prisma` + migrations)
 
@@ -239,6 +245,13 @@ A pure, dependency-free function shared by the search route and the eval harness
    `weight = 1` behaves like keyword-only, `weight = 0` like semantic-only.
 
 `DEFAULT_HYBRID_WEIGHT = 0.5` — chosen by the eval weight sweep, not guessed.
+
+### Object storage (`lib/storage.ts`)
+
+An S3 client (`@aws-sdk/client-s3`, path-style) pointed at MinIO. Exposes
+`putObject` / `getObject` / `deleteObject` and lazily creates the bucket on first use.
+Uploads store the original file under `documents/<id>/<fileName>`; the key is saved on
+the document row so files can be streamed back or deleted.
 
 ### Prisma client (`lib/prisma.ts`)
 
@@ -352,7 +365,7 @@ pnpm --filter @indexflow/web eval     # CLI table + gate
 # 1. install
 pnpm install
 
-# 2. start Postgres (pgvector) on port 5440
+# 2. start Postgres (pgvector, :5440) and MinIO (:9100, console :9101)
 pnpm db:up
 
 # 3. apply migrations
@@ -402,6 +415,9 @@ Defined in `apps/web/.env` (see `apps/web/.env.example`):
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (defaults to the docker-compose DB on port 5440) |
+| `MINIO_ENDPOINT` | MinIO S3 API endpoint (default `http://localhost:9100`) |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
+| `MINIO_BUCKET` | Bucket for original files (default `indexflow`) |
 | `OPENAI_API_KEY` | Unused today — placeholder for a future OpenAI embedding provider |
 
 Embeddings run locally, so no API key is required to use the app.
@@ -452,7 +468,6 @@ exact KNN so eval numbers are deterministic and reproducible.
 - **`.md` / `.txt` only** — PDF extraction is Step 7.
 - **Synchronous indexing** — done inside the upload request; large files would block.
   Async BullMQ ingestion is Step 6.
-- **Extracted text only** — original files aren't stored yet (MinIO is Step 6).
 - **No authentication / multi-tenancy.**
 - Upload size cap: 5 MB.
 

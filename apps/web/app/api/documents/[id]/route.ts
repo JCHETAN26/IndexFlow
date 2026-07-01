@@ -1,16 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { deleteObject } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
-// Delete a document and its chunks (cascade via the schema relation).
+// Delete a document, its stored file, and its chunks (chunks cascade via the schema).
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   try {
+    const doc = await prisma.document.findUnique({
+      where: { id },
+      select: { storageKey: true },
+    });
+    if (!doc) {
+      return NextResponse.json({ error: "Document not found." }, { status: 404 });
+    }
+
+    if (doc.storageKey) {
+      // Best-effort: don't block deletion of the record if the object is already gone.
+      await deleteObject(doc.storageKey).catch(() => {});
+    }
     await prisma.document.delete({ where: { id } });
     return new NextResponse(null, { status: 204 });
   } catch (e) {

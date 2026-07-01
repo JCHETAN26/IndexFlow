@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { chunkText } from "@/lib/chunk";
 import { embed, toVectorLiteral } from "@/lib/embed";
+import { putObject, storageKeyFor } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
@@ -43,7 +45,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const text = await file.text();
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const text = bytes.toString("utf8");
   const chunks = chunkText(text);
   if (chunks.length === 0) {
     return NextResponse.json(
@@ -57,15 +60,23 @@ export async function POST(req: NextRequest) {
   // Embed before writing anything, so a model failure leaves no partial document.
   const vectors = await embed(chunks.map((c) => c.content));
 
-  // Step 1+2: synchronous ingestion inside the request. Becomes a BullMQ job in Step 6.
+  // Store the original file in MinIO before touching the DB, so the document row
+  // always points at a real object.
+  const documentId = randomUUID();
+  const storageKey = storageKeyFor(documentId, file.name);
+  await putObject(storageKey, bytes, file.type || "text/plain");
+
+  // Step 1+2: synchronous ingestion inside the request. Becomes a BullMQ job in Step 6b.
   // Chunks are inserted via raw SQL because the pgvector `embedding` column is an
   // Unsupported type that the Prisma client can't write directly.
   const document = await prisma.$transaction(async (tx) => {
     const doc = await tx.document.create({
       data: {
+        id: documentId,
         title,
         fileName: file.name,
         fileType: ext,
+        storageKey,
         status: "INDEXED",
         indexedAt: new Date(),
       },

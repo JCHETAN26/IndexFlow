@@ -21,6 +21,7 @@ model Document {
   title      String
   fileName   String
   fileType   String
+  storageKey String? // MinIO object key for the original file
   status     DocumentStatus @default(UPLOADED)
   uploadedAt DateTime       @default(now())
   indexedAt  DateTime?

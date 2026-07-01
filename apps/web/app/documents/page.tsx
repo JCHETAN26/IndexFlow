@@ -95,7 +95,15 @@ export default function DocumentsPage() {
               <div className="min-w-0">
                 <p className="truncate font-medium">{d.title}</p>
                 <p className="mt-0.5 truncate text-xs text-neutral-400">
-                  {d.fileName} · {formatDate(d.uploadedAt)}
+                  <a
+                    href={`/api/documents/${d.id}/file`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline decoration-neutral-300 underline-offset-2 hover:text-neutral-600"
+                  >
+                    {d.fileName}
+                  </a>{" "}
+                  · {formatDate(d.uploadedAt)}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-3">
