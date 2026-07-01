@@ -16,6 +16,7 @@
     "schema": "prisma/schema.prisma"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1077.0",
     "@huggingface/transformers": "^4.2.0",
     "@prisma/client": "^6.2.1",
     "next": "^15.1.4",

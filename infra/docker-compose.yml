@@ -19,5 +19,20 @@ services:
       timeout: 5s
       retries: 10
 
+  minio:
+    image: minio/minio:latest
+    container_name: indexflow-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9101"
+    environment:
+      MINIO_ROOT_USER: indexflow
+      MINIO_ROOT_PASSWORD: indexflow123
+    ports:
+      - "9100:9000" # S3 API
+      - "9101:9101" # web console
+    volumes:
+      - indexflow_miniodata:/data
+
 volumes:
   indexflow_pgdata:
+  indexflow_miniodata:
