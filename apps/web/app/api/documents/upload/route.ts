@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { chunkText } from "@/lib/chunk";
-import { embed, toVectorLiteral } from "@/lib/embed";
 import { putObject, storageKeyFor } from "@/lib/storage";
+import { getIngestionQueue } from "@/lib/queue";
 
 export const runtime = "nodejs";
 
@@ -39,70 +38,43 @@ export async function POST(req: NextRequest) {
     );
   }
   if (file.size > MAX_BYTES) {
-    return NextResponse.json(
-      { error: "File too large (max 5 MB)." },
-      { status: 413 },
-    );
+    return NextResponse.json({ error: "File too large (max 5 MB)." }, { status: 413 });
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
-  const text = bytes.toString("utf8");
-  const chunks = chunkText(text);
-  if (chunks.length === 0) {
-    return NextResponse.json(
-      { error: "File contains no extractable text." },
-      { status: 422 },
-    );
-  }
-
   const title = file.name.replace(/\.[^.]+$/, "");
-
-  // Embed before writing anything, so a model failure leaves no partial document.
-  const vectors = await embed(chunks.map((c) => c.content));
-
-  // Store the original file in MinIO before touching the DB, so the document row
-  // always points at a real object.
   const documentId = randomUUID();
   const storageKey = storageKeyFor(documentId, file.name);
+
+  // Store the original file, then create the document + a queued ingestion job.
+  // Actual indexing (chunk → embed → store) happens asynchronously in the worker.
   await putObject(storageKey, bytes, file.type || "text/plain");
 
-  // Step 1+2: synchronous ingestion inside the request. Becomes a BullMQ job in Step 6b.
-  // Chunks are inserted via raw SQL because the pgvector `embedding` column is an
-  // Unsupported type that the Prisma client can't write directly.
-  const document = await prisma.$transaction(async (tx) => {
-    const doc = await tx.document.create({
-      data: {
-        id: documentId,
-        title,
-        fileName: file.name,
-        fileType: ext,
-        storageKey,
-        status: "INDEXED",
-        indexedAt: new Date(),
-      },
-      select: { id: true, title: true, fileName: true, fileType: true },
-    });
-
-    for (let i = 0; i < chunks.length; i++) {
-      await tx.$executeRaw`
-        INSERT INTO document_chunks (id, "documentId", "chunkIndex", content, "tokenCount", embedding, "createdAt")
-        VALUES (
-          gen_random_uuid(),
-          ${doc.id}::uuid,
-          ${chunks[i].index},
-          ${chunks[i].content},
-          ${chunks[i].tokenCount},
-          ${toVectorLiteral(vectors[i])}::vector,
-          now()
-        )
-      `;
-    }
-
-    return doc;
+  const document = await prisma.document.create({
+    data: {
+      id: documentId,
+      title,
+      fileName: file.name,
+      fileType: ext,
+      storageKey,
+      status: "UPLOADED",
+    },
+    select: { id: true, title: true, fileName: true, fileType: true },
   });
 
+  const job = await prisma.ingestionJob.create({
+    data: { documentId, status: "QUEUED" },
+    select: { id: true },
+  });
+
+  await getIngestionQueue().add(
+    "ingest",
+    { documentId, jobId: job.id },
+    { attempts: 3, backoff: { type: "exponential", delay: 2000 }, removeOnComplete: true, removeOnFail: false },
+  );
+
   return NextResponse.json(
-    { document, chunkCount: chunks.length },
-    { status: 201 },
+    { document, jobId: job.id, status: "QUEUED" },
+    { status: 202 },
   );
 }
