@@ -19,6 +19,20 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: indexflow-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379" # host 6380 (6379 is commonly taken) → container 6379
+    volumes:
+      - indexflow_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   minio:
     image: minio/minio:latest
     container_name: indexflow-minio
@@ -36,3 +50,4 @@ services:
 volumes:
   indexflow_pgdata:
   indexflow_miniodata:
+  indexflow_redisdata:
