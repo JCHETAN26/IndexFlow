@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { deleteObject } from "@/lib/storage";
+import { deleteDocumentChunks } from "@/lib/es";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,8 @@ export async function DELETE(
       // Best-effort: don't block deletion of the record if the object is already gone.
       await deleteObject(doc.storageKey).catch(() => {});
     }
+    // Best-effort: remove the document's chunks from the ES keyword index too.
+    await deleteDocumentChunks(id, undefined, true).catch(() => {});
     await prisma.document.delete({ where: { id } });
     return new NextResponse(null, { status: 204 });
   } catch (e) {

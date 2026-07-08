@@ -9,6 +9,7 @@
     "lint": "next lint",
     "prisma": "prisma",
     "embed:backfill": "tsx --env-file=.env scripts/backfill-embeddings.ts",
+    "es:backfill": "tsx --env-file=.env scripts/backfill-es.ts",
     "eval": "tsx --env-file=.env eval/run.ts",
     "worker": "tsx --env-file=.env worker/index.ts",
     "postinstall": "prisma generate"
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1077.0",
+    "@elastic/elasticsearch": "^8.19.2",
     "@huggingface/transformers": "^4.2.0",
     "@prisma/client": "^6.2.1",
     "bullmq": "^5.79.2",

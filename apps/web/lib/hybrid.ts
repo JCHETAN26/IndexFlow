@@ -6,9 +6,10 @@ export interface Scored {
 /**
  * Keyword weight in [0, 1] for the hybrid blend; semantic weight is (1 - weight).
  * Chosen by the weight sweep in the eval harness, not guessed. Re-run `pnpm eval`
- * after corpus changes and update this if the sweep's best weight moves.
+ * after corpus/backend changes and update this if the sweep's best weight moves.
+ * (Elasticsearch BM25 keyword scores shifted the optimum from 0.5 to 0.4.)
  */
-export const DEFAULT_HYBRID_WEIGHT = 0.5;
+export const DEFAULT_HYBRID_WEIGHT = 0.4;
 
 /** Min-max normalize scores to [0, 1] within a single list (keyed by id). */
 function normalize(items: Scored[]): Map<string, number> {

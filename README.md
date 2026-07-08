@@ -7,9 +7,11 @@ searches across them with a single ranked, highlighted result list. It ships wit
 live evaluation page that scores keyword vs semantic vs hybrid retrieval on a labeled
 query set, so every ranking decision is backed by numbers.
 
-> **Status: Step 5 of 7.** Working end to end locally: upload → manage → search
-> (keyword / semantic / hybrid) → benchmark. Async indexing, Elasticsearch, MinIO,
-> PDF support, and deployment are the remaining steps — see [Roadmap](#roadmap).
+> **Status: Step 6 of 7.** Working end to end locally: upload → async indexing on a
+> BullMQ worker → manage → search (keyword / semantic / hybrid) → benchmark. Keyword
+> search runs on **Elasticsearch** (BM25 + highlighting), original files live in
+> **MinIO**, and ingestion runs off-request on a **Redis/BullMQ** queue. PDF support and
+> deployment are the remaining steps — see [Roadmap](#roadmap).
 
 ---
 
@@ -39,24 +41,27 @@ Two kinds of search have opposite strengths:
 
 | | Good at | Bad at |
 |---|---|---|
-| **Keyword** (full-text) | Exact strings: error codes, API names, config keys, IDs | Paraphrases — it matches words, not meaning |
+| **Keyword** (BM25) | Exact strings: error codes, API names, config keys, IDs | Paraphrases — it matches words, not meaning |
 | **Semantic** (vector) | Meaning: "typing feels slow" finds "input latency" | Exact tokens, and it can misrank when a document's embedding is "diluted" |
 
-Postgres full-text uses `plainto_tsquery`, which **ANDs** every term — so one
-non-matching word ("dark **mode**" against a doc that says "dark themes") drops the
-result entirely. That brittleness is real and measured in this repo (keyword MRR 0.48).
+Keyword search runs on **Elasticsearch** (BM25 with `or` term semantics), which ranks a
+document by how many query terms it matches and how rare they are — strong on exact
+identifiers but still blind to meaning: a query for "typing feels slow" won't match a
+doc that only says "input latency" (keyword paraphrase R@1 is just 83%, vs 92% semantic).
 
 **Hybrid** blends both. It keeps keyword's exact-match guarantees and semantic's
 paraphrase coverage, and in the evaluation it beats both individual strategies
-(MRR 0.98 vs semantic 0.96 vs keyword 0.48).
+(MRR 0.98 vs semantic 0.96 vs keyword 0.92).
 
 ---
 
 ## Features
 
-- **Upload & index** `.md` / `.txt` files; text is chunked and embedded on upload.
+- **Upload & index** `.md` / `.txt` files; text is chunked and embedded off-request on a
+  BullMQ worker, then mirrored into Elasticsearch for keyword search.
 - **Three search modes** — keyword, semantic, hybrid — switchable in the UI.
-- **Highlighted snippets** via Postgres `ts_headline`, rendered XSS-safe.
+- **Highlighted snippets** via Elasticsearch highlighting, rendered XSS-safe.
+- **Ingestion jobs** page (`/jobs`) with live status (queued → running → completed/failed).
 - **Keyboard-navigable** results (↑/↓/Esc) with focus ring and scroll-into-view.
 - **Document management** page: list everything indexed, delete with cascade.
 - **Live evaluation page** (`/eval`): recall@k, MRR, a hybrid weight sweep, and a
@@ -77,24 +82,29 @@ clearest single view of what the project does._
 
 ## Architecture
 
-IndexFlow is a single Next.js application (UI + API routes) backed by one Postgres
-database that does double duty: full-text search **and** vector search (via the
-`pgvector` extension). Original files are stored in **MinIO** (S3-compatible object
-storage). There is no separate search cluster yet — Elasticsearch arrives in Step 6c
-(see [Design decisions](#design-decisions-faq)).
+IndexFlow is a Next.js application (UI + API routes) plus a standalone **BullMQ worker**.
+Postgres is the source of truth and the vector store (via the `pgvector` extension);
+**Elasticsearch** owns keyword search, BM25 ranking, and highlighting; original files
+live in **MinIO** (S3-compatible object storage); **Redis** backs the ingestion queue.
+Chunk ids are generated in app code so the same id keys a Postgres row and an ES
+document — that's how hybrid correlates keyword + semantic hits (see
+[Design decisions](#design-decisions-faq)).
 
-### Ingestion pipeline
+### Ingestion pipeline (async)
 
 ```mermaid
 flowchart LR
     A[Browser /upload] -->|multipart file| B[POST /api/documents/upload]
     B --> C{validate type & size}
     C -->|.md/.txt, <=5MB| M[putObject → MinIO<br/>original file]
-    M --> D[chunkText]
+    M --> J[create document + ingestion_job<br/>enqueue on Redis/BullMQ]
+    J -.->|202 Accepted| A
+    J ==>|worker picks up| W[BullMQ worker]
+    W --> D[getObject → chunkText]
     D --> E[embed chunks<br/>all-MiniLM-L6-v2]
     E --> F[(Postgres)]
-    F --> G[documents row<br/>+ storageKey]
-    F --> H[document_chunks rows<br/>content + tsvector + embedding]
+    F --> H[document_chunks rows<br/>content + embedding]
+    F --> ES[(Elasticsearch<br/>indexflow_chunks)]
 ```
 
 ### Search pipeline
@@ -102,8 +112,8 @@ flowchart LR
 ```mermaid
 flowchart LR
     Q[Browser /] -->|q, mode| R[GET /api/search]
-    R --> K[keyword<br/>ts_rank + ts_headline]
-    R --> S[semantic<br/>embed query + cosine]
+    R --> K[keyword<br/>Elasticsearch BM25 + highlight]
+    R --> S[semantic<br/>embed query + pgvector cosine]
     K --> H{mode?}
     S --> H
     H -->|keyword| KO[normalize + highlight]
@@ -123,7 +133,9 @@ flowchart LR
 | Framework | **Next.js 15** (App Router) + **React 19** | One app for UI and API routes; server routes run on Node |
 | Language | **TypeScript** (strict) | Typed end to end |
 | Styling | **Tailwind CSS v4** | Fast, consistent styling with zero custom CSS framework |
-| Database | **PostgreSQL 16** + **pgvector** | One store for both full-text and vector search |
+| Database | **PostgreSQL 16** + **pgvector** | Source of truth for documents/chunks + vector search |
+| Keyword search | **Elasticsearch 8** | BM25 ranking, highlighting, file-type filters |
+| Queue | **Redis 7** + **BullMQ** | Off-request ingestion jobs with retries |
 | Object storage | **MinIO** (S3-compatible) | Stores the original uploaded files |
 | ORM | **Prisma 6** | Typed schema + migrations; raw SQL where pgvector needs it |
 | Embeddings | **Transformers.js** (`all-MiniLM-L6-v2`, 384-dim) | Real semantic vectors, in-process, **no API key**, runs in CI |
@@ -143,30 +155,39 @@ indexflow/
 │   │   ├── upload/page.tsx        # "/upload"    file upload + session history
 │   │   ├── documents/page.tsx     # "/documents" list + delete indexed docs
 │   │   ├── eval/page.tsx          # "/eval"      live retrieval benchmark
+│   │   ├── jobs/page.tsx          # "/jobs"      live ingestion job status
 │   │   ├── globals.css            # Tailwind import + <mark> styles
 │   │   └── api/
-│   │       ├── documents/upload/route.ts   # POST  upload → MinIO + synchronous index
+│   │       ├── documents/upload/route.ts   # POST  upload → MinIO + enqueue ingestion job
 │   │       ├── documents/route.ts          # GET   list documents
-│   │       ├── documents/[id]/route.ts     # DELETE a document (cascade + storage)
+│   │       ├── documents/[id]/route.ts     # DELETE a document (cascade + ES + storage)
 │   │       ├── documents/[id]/file/route.ts# GET   stream the original file
+│   │       ├── jobs/route.ts               # GET   list ingestion jobs
+│   │       ├── jobs/[id]/route.ts          # GET   poll a single job's status
 │   │       ├── search/route.ts             # GET   keyword | semantic | hybrid
 │   │       └── eval/route.ts               # GET   run evaluation, return report
+│   ├── worker/index.ts            # BullMQ ingestion worker (consumes the queue)
 │   ├── lib/
 │   │   ├── prisma.ts              # PrismaClient singleton
-│   │   ├── storage.ts            # MinIO (S3) object storage
+│   │   ├── storage.ts             # MinIO (S3) object storage
+│   │   ├── queue.ts               # BullMQ queue + Redis connection
+│   │   ├── ingest.ts              # shared indexer: download → chunk → embed → PG + ES
+│   │   ├── es.ts                  # Elasticsearch client, indexing, BM25 keyword search
 │   │   ├── chunk.ts               # text → overlapping chunks
 │   │   ├── embed.ts               # local embedding model wrapper
 │   │   └── hybrid.ts              # pure keyword+semantic blend
 │   ├── eval/
 │   │   ├── corpus.json            # labeled fixture corpus (17 docs)
 │   │   ├── queries.json           # 27 queries with gold-relevant docs
-│   │   ├── harness.ts             # shared eval logic (CLI + API)
+│   │   ├── harness.ts             # shared eval logic (ephemeral ES + rolled-back PG)
 │   │   └── run.ts                 # CLI: print table + apply quality gate
 │   ├── prisma/
-│   │   ├── schema.prisma          # models: Document, DocumentChunk
-│   │   └── migrations/            # init, FTS GIN index, embeddings + HNSW index
-│   └── scripts/backfill-embeddings.ts  # embed chunks created before Step 2
-├── infra/docker-compose.yml       # Postgres (pgvector image) on port 5440
+│   │   ├── schema.prisma          # models: Document, DocumentChunk, IngestionJob
+│   │   └── migrations/            # init, FTS GIN index, embeddings + HNSW, ingestion_jobs
+│   └── scripts/
+│       ├── backfill-embeddings.ts # embed chunks created before Step 2
+│       └── backfill-es.ts         # (re)index all chunks into Elasticsearch
+├── infra/docker-compose.yml       # Postgres, Redis, Elasticsearch, MinIO
 ├── .github/workflows/ci.yml       # build + eval jobs
 ├── plan.md                        # build plan and direction
 └── pnpm-workspace.yaml
@@ -178,37 +199,44 @@ indexflow/
 
 ### Monorepo (`pnpm-workspace.yaml`, root `package.json`)
 
-A pnpm workspace with one package today (`apps/web`). Root scripts proxy into it
-(`pnpm dev`, `pnpm build`, `pnpm db:up`, …). The workspace exists so `apps/api` (a
-BullMQ worker) and `packages/shared` can be added in Step 6 without restructuring.
+A pnpm workspace with one package today (`apps/web`), which contains both the Next.js
+app and the BullMQ worker (`worker/index.ts`, run via `pnpm worker`). Root scripts proxy
+into it (`pnpm dev`, `pnpm worker`, `pnpm build`, `pnpm db:up`, …).
 
 ### Infrastructure (`infra/docker-compose.yml`)
 
-Two services. **Postgres** uses the **`pgvector/pgvector:pg16`** image (vector extension
-available without a custom build), published on host port **5440** to avoid colliding
-with a local Postgres on 5432, with a named volume and a healthcheck. **MinIO**
-(S3-compatible object storage) runs the S3 API on host port **9100** and its web console
-on **9101**. Both use named volumes; the compose project is named `indexflow` so it
-never touches your other containers.
+Four services: **Postgres** (pgvector), **Redis** (BullMQ), **Elasticsearch** (keyword),
+and **MinIO** (files). **Postgres** uses the **`pgvector/pgvector:pg16`** image (vector
+extension available without a custom build), published on host port **5440** to avoid colliding
+with a local Postgres on 5432, with a named volume and a healthcheck. **Redis 7**
+(host **6380**) backs the BullMQ queue. **Elasticsearch 8** (host **9200**, single-node,
+security disabled, 512 MB heap) owns the keyword index. **MinIO** (S3-compatible object
+storage) runs the S3 API on host port **9100** and its web console on **9101**. All use
+named volumes; the compose project is named `indexflow` so it never touches your other
+containers.
 
 ### Data model (`prisma/schema.prisma` + migrations)
 
-Two tables:
+Three tables:
 
 - **`documents`** — `id`, `title`, `fileName`, `fileType`, `status`
   (`UPLOADED | INDEXING | INDEXED | FAILED`), `uploadedAt`, `indexedAt`.
 - **`document_chunks`** — `id`, `documentId` (FK, cascade delete), `chunkIndex`,
   `content`, `tokenCount`, `embedding vector(384)`, `createdAt`.
+- **`ingestion_jobs`** — `id`, `documentId` (FK, cascade), `status`
+  (`QUEUED | RUNNING | COMPLETED | FAILED`), `error`, `startedAt`, `completedAt`,
+  `createdAt`.
 
-Three migrations build it up:
+Migrations build it up:
 
-1. `init` — the two tables.
-2. `fts_gin_index` — a **functional GIN index** on
-   `to_tsvector('english', content)` for fast full-text search (this can't be
-   expressed in `schema.prisma`, so it's a hand-written migration).
+1. `init` — documents + document_chunks.
+2. `fts_gin_index` — a functional GIN index on `to_tsvector('english', content)`.
+   (Legacy from Steps 1–5; keyword search moved to Elasticsearch in Step 6c, so this is
+   no longer on the query path but is kept for the eval/back-compat.)
 3. `add_embeddings` — enables the `vector` extension, adds the `embedding` column,
    and creates an **HNSW** index with `vector_cosine_ops` for fast nearest-neighbour
    search.
+4. `ingestion_jobs` — the async ingestion job table (Step 6b).
 
 The `embedding` column is declared in Prisma as `Unsupported("vector(384)")?` so
 Prisma tracks it (no migration drift) while reads/writes go through raw SQL.
@@ -236,7 +264,7 @@ native runtime is loaded at runtime instead of being bundled by webpack.
 
 A pure, dependency-free function shared by the search route and the eval harness:
 
-1. **Min-max normalize** each strategy's scores to `[0,1]` (keyword `ts_rank` and
+1. **Min-max normalize** each strategy's scores to `[0,1]` (keyword BM25 and
    cosine similarity live on different scales).
 2. **Weighted sum**: `weight · keyword + (1 − weight) · semantic`. Items missing from
    a list contribute 0, so documents found by **both** strategies are naturally
@@ -244,12 +272,29 @@ A pure, dependency-free function shared by the search route and the eval harness
 3. Items with a zero blended score are dropped, which keeps the endpoints honest:
    `weight = 1` behaves like keyword-only, `weight = 0` like semantic-only.
 
-`DEFAULT_HYBRID_WEIGHT = 0.5` — chosen by the eval weight sweep, not guessed.
+`DEFAULT_HYBRID_WEIGHT = 0.4` — chosen by the eval weight sweep, not guessed.
 
 ### Object storage (`lib/storage.ts`)
 
 An S3 client (`@aws-sdk/client-s3`, path-style) pointed at MinIO. Exposes
 `putObject` / `getObject` / `deleteObject` and lazily creates the bucket on first use.
+
+### Keyword index (`lib/es.ts`)
+
+The Elasticsearch client and the `indexflow_chunks` index (mapping: `chunk_id`,
+`document_id`, `chunk_index`, `title`, `file_type`, `content`, `created_at`). Exposes
+`ensureChunkIndex`, `indexChunks` (bulk, keyed by chunk id), `deleteDocumentChunks`, and
+`keywordSearch` (BM25 `multi_match` + highlight fragments). `createEphemeralIndex` /
+`deleteIndex` let the eval harness spin up a throwaway index per run.
+
+### Ingestion queue & worker (`lib/queue.ts`, `lib/ingest.ts`, `worker/index.ts`)
+
+Upload enqueues an `ingestion` job on Redis via BullMQ and returns `202`. The worker
+(`pnpm worker`) consumes it: marks the job `RUNNING`, calls the shared `ingestDocument`
+(download from MinIO → chunk → embed → write to Postgres → mirror to Elasticsearch), then
+marks it `COMPLETED`. Jobs retry with exponential backoff (3 attempts) and only flip to
+`FAILED` once attempts are exhausted. Chunk ids are generated in `ingest.ts` so the same
+id keys the Postgres row and the ES document.
 Uploads store the original file under `documents/<id>/<fileName>`; the key is saved on
 the document row so files can be streamed back or deleted.
 
@@ -261,15 +306,17 @@ A standard singleton that reuses one `PrismaClient` across hot reloads in develo
 ### API routes
 
 - **`POST /api/documents/upload`** — accepts a multipart `file`, validates extension
-  (`.md`/`.txt`) and size (≤ 5 MB), chunks the text, embeds the chunks, and writes the
-  document plus chunks **inside a transaction**. Embedding happens before any write, so
-  a model failure leaves no partial document. (Synchronous today; becomes a BullMQ job
-  in Step 6.)
+  (`.md`/`.txt`) and size (≤ 5 MB), stores the original in MinIO, creates the document
+  and a `QUEUED` ingestion job, enqueues it on BullMQ, and returns **`202 Accepted`**.
+  The worker does the chunk → embed → store-to-Postgres → mirror-to-Elasticsearch work.
 - **`GET /api/search?q=&mode=&fileType=`** — runs keyword, semantic, or hybrid (see
   [below](#the-three-search-modes)). Returns ranked hits with snippet, score, source
   label, and total latency.
 - **`GET /api/documents`** — lists documents (newest first) with chunk counts.
-- **`DELETE /api/documents/[id]`** — deletes a document; chunks cascade. 404 if missing.
+- **`DELETE /api/documents/[id]`** — deletes a document; chunks cascade in Postgres and
+  are removed from Elasticsearch and MinIO (best-effort). 404 if missing.
+- **`GET /api/jobs` / `GET /api/jobs/[id]`** — list recent ingestion jobs / poll one
+  job's status (used by the `/jobs` page and the upload page).
 - **`GET /api/eval`** — runs the evaluation harness on demand and returns the report
   (used by the `/eval` page).
 
@@ -290,20 +337,21 @@ A standard singleton that reuses one `PrismaClient` across hot reloads in develo
 
 ## The three search modes
 
-All three read from the same `document_chunks` table.
+Keyword reads from Elasticsearch; semantic reads from `document_chunks` in Postgres.
+Both stores are keyed by the same chunk ids, so hybrid can blend them.
 
-**Keyword** — `to_tsvector('english', content) @@ plainto_tsquery(q)`, ranked by
-`ts_rank`, with snippets from `ts_headline`. `ts_rank` is unbounded, so scores are
+**Keyword** — an Elasticsearch `multi_match` over `content` (and a lightly boosted
+`title`) with `or` term semantics, ranked by BM25. BM25 is unbounded, so scores are
 min-max normalized for display.
 
 **Semantic** — the query is embedded with the same MiniLM model, then chunks are
 ranked by cosine distance (`embedding <=> queryVector`); score = `1 − distance`.
 
 **Hybrid** — fetch candidates from both, blend with `blendHybrid` (see above), and
-return the top results. Snippets prefer the keyword candidate (it carries the
-highlighted `ts_headline`) and fall back to escaped content for semantic-only hits.
+return the top results. Snippets prefer the keyword candidate (it carries the ES
+highlight fragments) and fall back to escaped content for semantic-only hits.
 
-**XSS-safe highlighting:** `ts_headline` wraps matches in sentinel tokens
+**XSS-safe highlighting:** Elasticsearch wraps matches in sentinel tokens
 (`@@HL_START@@` / `@@HL_END@@`); the server HTML-escapes the whole snippet and only
 then swaps the sentinels for `<mark>`. Raw chunk content can never inject markup.
 
@@ -319,15 +367,18 @@ document. The corpus includes adversarial cases — exact identifiers and an
 embedding-dilution case (a long error-code reference vs an on-topic distractor) — so
 hybrid's advantage is real, not contrived.
 
-**Isolation** (`eval/harness.ts`): the corpus is seeded inside a transaction that is
-**rolled back** at the end, so the eval never touches real data. Searches are scoped to
-the corpus document ids, and index scans are disabled (`SET LOCAL enable_indexscan =
-off`) so semantic ranking is **exact** (brute-force KNN), making results deterministic.
+**Isolation** (`eval/harness.ts`): the harness mirrors production — keyword candidates
+come from a real Elasticsearch BM25 query against an **ephemeral index** (created and
+torn down per run), and semantic candidates come from pgvector inside a transaction that
+is **rolled back** at the end. Neither store keeps eval data. Semantic index scans are
+disabled (`SET LOCAL enable_indexscan = off`) so ranking is **exact** (brute-force KNN),
+making results deterministic.
 
 **Metrics**: recall@1/3/5 and MRR per strategy, plus a per-query-kind breakdown.
 
 **Weight sweep**: hybrid MRR is computed across keyword weights 0.0 → 1.0; the best is
-chosen (tie-break toward 0.5) and surfaced as the recommended `DEFAULT_HYBRID_WEIGHT`.
+chosen (tie-break toward 0.5) and surfaced as the recommended `DEFAULT_HYBRID_WEIGHT`
+(currently **0.4** — BM25 keyword scores shifted the optimum down from the old 0.5).
 
 **Quality gate**: floors sit below current numbers to catch regressions (e.g. "hybrid
 MRR ≥ best single strategy"). `pnpm eval` exits non-zero on failure, which fails CI.
@@ -336,17 +387,20 @@ MRR ≥ best single strategy"). `pnpm eval` exits non-zero on failure, which fai
 
 ```
 strategy   R@1   R@3   R@5    MRR
-keyword     48%   48%   48%   0.48
+keyword     89%   93%  100%   0.92
 semantic    93%  100%  100%   0.96
 hybrid      96%  100%  100%   0.98   ← beats both
 
 by query kind (R@1):   keyword   semantic   hybrid
-exact                     73%       93%       100%
-paraphrase                17%       92%        92%
+exact                     93%       93%       100%
+paraphrase                83%       92%        92%
 ```
 
-Semantic misranks `ERR_QUOTA_4096` (the diluted reference doc loses to an on-topic
-distractor); keyword's exact match rescues it, so hybrid hits 100% on exact queries.
+Elasticsearch BM25 (with `or` term semantics) makes keyword far stronger than naive
+Postgres full-text was (`plainto_tsquery` ANDs every term — one off word dropped the
+result; keyword MRR was 0.48). Keyword still trails on paraphrases (R@1 83%), and
+semantic misranks `ERR_QUOTA_4096` (the diluted reference doc loses to an on-topic
+distractor). Hybrid takes the best of both and hits 100% R@1 on exact queries.
 
 Run it yourself:
 
@@ -365,23 +419,28 @@ pnpm --filter @indexflow/web eval     # CLI table + gate
 # 1. install
 pnpm install
 
-# 2. start Postgres (pgvector, :5440) and MinIO (:9100, console :9101)
+# 2. start infra: Postgres (pgvector, :5440), Redis (:6380),
+#    Elasticsearch (:9200), MinIO (:9100, console :9101)
 pnpm db:up
 
 # 3. apply migrations
 pnpm db:migrate
 
-# 4. run the app
+# 4. run the app AND the ingestion worker (two terminals)
 pnpm dev                  # http://localhost:3000
+pnpm worker               # BullMQ worker — indexes uploads
 ```
 
-Open `/upload` to index a file, `/` to search it, `/documents` to manage, and `/eval`
-to benchmark. The first search or upload downloads the embedding model (~25 MB) once.
+Open `/upload` to index a file, `/jobs` to watch ingestion, `/` to search it,
+`/documents` to manage, and `/eval` to benchmark. The first search or upload downloads
+the embedding model (~25 MB) once. **The worker must be running** for uploads to index.
 
-If you indexed files before embeddings existed, backfill them:
+If you have documents that predate a store (e.g. indexed before Elasticsearch existed),
+backfill them:
 
 ```bash
-pnpm --filter @indexflow/web embed:backfill
+pnpm --filter @indexflow/web embed:backfill   # chunks with a NULL embedding → pgvector
+pnpm --filter @indexflow/web es:backfill      # all chunks → Elasticsearch keyword index
 ```
 
 ---
@@ -393,8 +452,9 @@ pnpm --filter @indexflow/web embed:backfill
 | Script | Action |
 |---|---|
 | `pnpm dev` | Start the Next.js dev server |
+| `pnpm worker` | Start the BullMQ ingestion worker |
 | `pnpm build` | Production build (generates Prisma client, type-checks) |
-| `pnpm db:up` / `pnpm db:down` | Start / stop the Postgres container |
+| `pnpm db:up` / `pnpm db:down` | Start / stop all infra containers (Postgres, Redis, Elasticsearch, MinIO) |
 | `pnpm db:migrate` | Apply Prisma migrations |
 | `pnpm db:generate` | Regenerate the Prisma client |
 
@@ -404,6 +464,8 @@ pnpm --filter @indexflow/web embed:backfill
 |---|---|
 | `pnpm --filter @indexflow/web eval` | Run the evaluation + quality gate |
 | `pnpm --filter @indexflow/web embed:backfill` | Embed chunks with a NULL embedding |
+| `pnpm --filter @indexflow/web es:backfill` | (Re)index all chunks into Elasticsearch |
+| `pnpm --filter @indexflow/web worker` | Run the BullMQ ingestion worker |
 | `pnpm --filter @indexflow/web start` | Serve the production build |
 
 ---
@@ -415,6 +477,9 @@ Defined in `apps/web/.env` (see `apps/web/.env.example`):
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (defaults to the docker-compose DB on port 5440) |
+| `REDIS_URL` | Redis/BullMQ connection (default `redis://localhost:6380`) |
+| `ES_URL` | Elasticsearch endpoint (default `http://localhost:9200`) |
+| `ES_INDEX` | Keyword index name (default `indexflow_chunks`) |
 | `MINIO_ENDPOINT` | MinIO S3 API endpoint (default `http://localhost:9100`) |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
 | `MINIO_BUCKET` | Bucket for original files (default `indexflow`) |
@@ -432,8 +497,9 @@ two checks must pass before merging.
 **CI (`.github/workflows/ci.yml`)** runs on every PR:
 
 - **`build`** — `pnpm install` → `prisma generate` → `next build` (type-checks).
-- **`eval`** — spins up a Postgres (pgvector) service, applies migrations, and runs
-  `pnpm eval`. A retrieval regression below the quality floors fails the build.
+- **`eval`** — spins up Postgres (pgvector) and Elasticsearch services, applies
+  migrations, and runs `pnpm eval` (real BM25 keyword + pgvector semantic). A retrieval
+  regression below the quality floors fails the build.
 
 Both are **required status checks**, enforced on admins, with 0 required approvals
 (so a solo maintainer can self-merge once CI is green).
@@ -449,13 +515,19 @@ schema and `lib/embed.ts` are structured so an OpenAI provider can be added late
 **Why 384 dimensions, not 1536?** That's MiniLM's native size. Smaller vectors are
 cheaper to store and compare; quality is strong for this corpus (see the eval).
 
-**Why Postgres for both full-text and vector search?** One store, one transaction
-boundary, and it's enough to prove the hybrid thesis. Elasticsearch (richer
-highlighting/filters) and MinIO (raw file storage) come in Step 6, with the eval
-guarding against regressions during the swap.
+**Why Elasticsearch for keyword when Postgres full-text worked?** BM25 with `or` term
+semantics is dramatically better than `plainto_tsquery`'s all-AND matching (keyword MRR
+0.48 → 0.92 on the same corpus), plus ES gives richer highlighting and filters. Postgres
+stays the source of truth and the vector store; ES is a derived keyword index. The eval
+was made ES-backed at the same time, so the same quality gate guards the swap.
 
-**Why roll back the eval transaction?** So the benchmark can run against the live
-database (including from the `/eval` page) without ever polluting indexed data.
+**Why generate chunk ids in app code?** So one id keys both the Postgres row and the
+Elasticsearch document. Hybrid blends keyword + semantic candidates by chunk id, which
+only works if both stores agree on ids.
+
+**Why roll back the eval transaction (and use an ephemeral ES index)?** So the benchmark
+can run against the live database (including from the `/eval` page) without ever
+polluting indexed data in either store.
 
 **Why does the eval disable index scans?** HNSW is approximate; disabling it forces
 exact KNN so eval numbers are deterministic and reproducible.
@@ -466,8 +538,7 @@ exact KNN so eval numbers are deterministic and reproducible.
 
 - **Local only** — runs via Docker + `pnpm dev`; not deployed yet (Step 7).
 - **`.md` / `.txt` only** — PDF extraction is Step 7.
-- **Synchronous indexing** — done inside the upload request; large files would block.
-  Async BullMQ ingestion is Step 6.
+- **Worker must be running** — uploads sit in `QUEUED` until `pnpm worker` picks them up.
 - **No authentication / multi-tenancy.**
 - Upload size cap: 5 MB.
 
@@ -482,7 +553,7 @@ exact KNN so eval numbers are deterministic and reproducible.
 | 3 | Evaluation harness + CI quality gate | ✅ |
 | 4 | Hybrid blend + live `/eval` page | ✅ |
 | 5 | Search UX polish + documents management | ✅ |
-| 6 | Real infra: Elasticsearch, MinIO, BullMQ | ⏳ |
+| 6 | Real infra: MinIO (6a), BullMQ worker (6b), Elasticsearch (6c) | ✅ |
 | 7 | PDF support, realistic seed, deploy to a live URL | ⏳ |
 
 See [`plan.md`](./plan.md) for the full build plan.
