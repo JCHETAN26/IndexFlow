@@ -6,8 +6,8 @@ import { getIngestionQueue } from "@/lib/queue";
 
 export const runtime = "nodejs";
 
-const ALLOWED = new Set(["md", "txt"]);
-const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+const ALLOWED = new Set(["md", "txt", "pdf"]);
+const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -33,12 +33,12 @@ export async function POST(req: NextRequest) {
   const ext = extensionOf(file.name);
   if (!ALLOWED.has(ext)) {
     return NextResponse.json(
-      { error: `Unsupported file type ".${ext}". Allowed: .md, .txt` },
+      { error: `Unsupported file type ".${ext}". Allowed: .md, .txt, .pdf` },
       { status: 415 },
     );
   }
   if (file.size > MAX_BYTES) {
-    return NextResponse.json({ error: "File too large (max 5 MB)." }, { status: 413 });
+    return NextResponse.json({ error: "File too large (max 10 MB)." }, { status: 413 });
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());

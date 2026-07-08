@@ -1,0 +1,15 @@
+API Error Code Reference
+
+ERR_AUTH_401: the request carried a missing or expired credential. Re-authenticate and
+retry. A common cause is using a rotated API key that has already been revoked.
+
+ERR_TIMEOUT_504: the upstream search service did not respond within the deadline. Retry
+with exponential backoff. Persistent 504s usually mean a misconfigured gateway keepalive.
+
+ERR_QUOTA_4096: the account exceeded its per-minute request quota (4096 requests). Back
+off and spread traffic; the window resets every 60 seconds.
+
+ERR_PAYLOAD_413: the uploaded file exceeded the 10 MB size cap. Split the document or
+compress it before uploading.
+
+ERR_UNSUPPORTED_415: the uploaded file type is not one of .md, .txt, or .pdf.

@@ -7,11 +7,13 @@ searches across them with a single ranked, highlighted result list. It ships wit
 live evaluation page that scores keyword vs semantic vs hybrid retrieval on a labeled
 query set, so every ranking decision is backed by numbers.
 
-> **Status: Step 6 of 7.** Working end to end locally: upload → async indexing on a
-> BullMQ worker → manage → search (keyword / semantic / hybrid) → benchmark. Keyword
-> search runs on **Elasticsearch** (BM25 + highlighting), original files live in
-> **MinIO**, and ingestion runs off-request on a **Redis/BullMQ** queue. PDF support and
-> deployment are the remaining steps — see [Roadmap](#roadmap).
+> **Status: Step 7 of 7 (deployment pending).** Working end to end locally: upload
+> (`.md` / `.txt` / `.pdf`) → async indexing on a BullMQ worker → manage → search
+> (keyword / semantic / hybrid) → benchmark. Keyword search runs on **Elasticsearch**
+> (BM25 + highlighting), original files live in **MinIO**, and ingestion runs off-request
+> on a **Redis/BullMQ** queue. A one-command demo seed loads a realistic mixed-format
+> corpus through the real pipeline. Live deployment is the remaining step — see
+> [Roadmap](#roadmap).
 
 ---
 
@@ -57,8 +59,11 @@ paraphrase coverage, and in the evaluation it beats both individual strategies
 
 ## Features
 
-- **Upload & index** `.md` / `.txt` files; text is chunked and embedded off-request on a
-  BullMQ worker, then mirrored into Elasticsearch for keyword search.
+- **Upload & index** `.md` / `.txt` / `.pdf` files (PDF text extracted with unpdf); text
+  is chunked and embedded off-request on a BullMQ worker, then mirrored into
+  Elasticsearch for keyword search.
+- **One-command demo seed** (`pnpm seed`) that uploads a realistic mixed-format corpus
+  through the real upload → worker → index pipeline (no hardcoded rows).
 - **Three search modes** — keyword, semantic, hybrid — switchable in the UI.
 - **Highlighted snippets** via Elasticsearch highlighting, rendered XSS-safe.
 - **Ingestion jobs** page (`/jobs`) with live status (queued → running → completed/failed).
@@ -100,7 +105,7 @@ flowchart LR
     M --> J[create document + ingestion_job<br/>enqueue on Redis/BullMQ]
     J -.->|202 Accepted| A
     J ==>|worker picks up| W[BullMQ worker]
-    W --> D[getObject → chunkText]
+    W --> D[getObject → extractText<br/>.md/.txt/.pdf → chunkText]
     D --> E[embed chunks<br/>all-MiniLM-L6-v2]
     E --> F[(Postgres)]
     F --> H[document_chunks rows<br/>content + embedding]
@@ -167,11 +172,13 @@ indexflow/
 │   │       ├── search/route.ts             # GET   keyword | semantic | hybrid
 │   │       └── eval/route.ts               # GET   run evaluation, return report
 │   ├── worker/index.ts            # BullMQ ingestion worker (consumes the queue)
+│   ├── seed/corpus/               # demo corpus: mixed .md / .txt / .pdf files
 │   ├── lib/
 │   │   ├── prisma.ts              # PrismaClient singleton
 │   │   ├── storage.ts             # MinIO (S3) object storage
 │   │   ├── queue.ts               # BullMQ queue + Redis connection
-│   │   ├── ingest.ts              # shared indexer: download → chunk → embed → PG + ES
+│   │   ├── ingest.ts              # shared indexer: extract → chunk → embed → PG + ES
+│   │   ├── extract.ts             # text extraction (.md/.txt utf-8, .pdf via unpdf)
 │   │   ├── es.ts                  # Elasticsearch client, indexing, BM25 keyword search
 │   │   ├── chunk.ts               # text → overlapping chunks
 │   │   ├── embed.ts               # local embedding model wrapper
@@ -186,7 +193,8 @@ indexflow/
 │   │   └── migrations/            # init, FTS GIN index, embeddings + HNSW, ingestion_jobs
 │   └── scripts/
 │       ├── backfill-embeddings.ts # embed chunks created before Step 2
-│       └── backfill-es.ts         # (re)index all chunks into Elasticsearch
+│       ├── backfill-es.ts         # (re)index all chunks into Elasticsearch
+│       └── seed.ts                # upload the demo corpus through the real pipeline
 ├── infra/docker-compose.yml       # Postgres, Redis, Elasticsearch, MinIO
 ├── .github/workflows/ci.yml       # build + eval jobs
 ├── plan.md                        # build plan and direction
@@ -306,9 +314,10 @@ A standard singleton that reuses one `PrismaClient` across hot reloads in develo
 ### API routes
 
 - **`POST /api/documents/upload`** — accepts a multipart `file`, validates extension
-  (`.md`/`.txt`) and size (≤ 5 MB), stores the original in MinIO, creates the document
-  and a `QUEUED` ingestion job, enqueues it on BullMQ, and returns **`202 Accepted`**.
-  The worker does the chunk → embed → store-to-Postgres → mirror-to-Elasticsearch work.
+  (`.md`/`.txt`/`.pdf`) and size (≤ 10 MB), stores the original in MinIO, creates the
+  document and a `QUEUED` ingestion job, enqueues it on BullMQ, and returns
+  **`202 Accepted`**. The worker does the extract → chunk → embed →
+  store-to-Postgres → mirror-to-Elasticsearch work.
 - **`GET /api/search?q=&mode=&fileType=`** — runs keyword, semantic, or hybrid (see
   [below](#the-three-search-modes)). Returns ranked hits with snippet, score, source
   label, and total latency.
@@ -429,11 +438,15 @@ pnpm db:migrate
 # 4. run the app AND the ingestion worker (two terminals)
 pnpm dev                  # http://localhost:3000
 pnpm worker               # BullMQ worker — indexes uploads
+
+# 5. (optional) load a realistic mixed-format demo corpus through the real pipeline
+pnpm seed                 # needs the app + worker running; BASE_URL overrides the target
 ```
 
-Open `/upload` to index a file, `/jobs` to watch ingestion, `/` to search it,
-`/documents` to manage, and `/eval` to benchmark. The first search or upload downloads
-the embedding model (~25 MB) once. **The worker must be running** for uploads to index.
+Open `/upload` to index a file (`.md` / `.txt` / `.pdf`), `/jobs` to watch ingestion,
+`/` to search it, `/documents` to manage, and `/eval` to benchmark. The first search or
+upload downloads the embedding model (~25 MB) once. **The worker must be running** for
+uploads to index.
 
 If you have documents that predate a store (e.g. indexed before Elasticsearch existed),
 backfill them:
@@ -453,6 +466,7 @@ pnpm --filter @indexflow/web es:backfill      # all chunks → Elasticsearch key
 |---|---|
 | `pnpm dev` | Start the Next.js dev server |
 | `pnpm worker` | Start the BullMQ ingestion worker |
+| `pnpm seed` | Load the demo corpus through the real pipeline (needs app + worker) |
 | `pnpm build` | Production build (generates Prisma client, type-checks) |
 | `pnpm db:up` / `pnpm db:down` | Start / stop all infra containers (Postgres, Redis, Elasticsearch, MinIO) |
 | `pnpm db:migrate` | Apply Prisma migrations |
@@ -525,6 +539,17 @@ was made ES-backed at the same time, so the same quality gate guards the swap.
 Elasticsearch document. Hybrid blends keyword + semantic candidates by chunk id, which
 only works if both stores agree on ids.
 
+**How does PDF ingestion work?** `lib/extract.ts` parses PDFs with **unpdf** (a
+serverless-friendly build of pdf.js) and returns plain text that flows through the exact
+same chunk → embed → index path as text files. Extracted text is sanitized to strip null
+bytes / control chars, which pdf.js occasionally emits and which Postgres `TEXT` rejects.
+Scanned image-only PDFs have no text layer, so they won't extract (no OCR).
+
+**Why seed by uploading, not by inserting rows?** The seed script (`pnpm seed`) POSTs each
+file in `seed/corpus` to the real upload endpoint, so the demo data goes through MinIO,
+the queue, the worker, Postgres, and Elasticsearch — the same path a user's file takes.
+No hardcoded search results, per the project's rules.
+
 **Why roll back the eval transaction (and use an ephemeral ES index)?** So the benchmark
 can run against the live database (including from the `/eval` page) without ever
 polluting indexed data in either store.
@@ -536,11 +561,12 @@ exact KNN so eval numbers are deterministic and reproducible.
 
 ## Current limitations
 
-- **Local only** — runs via Docker + `pnpm dev`; not deployed yet (Step 7).
-- **`.md` / `.txt` only** — PDF extraction is Step 7.
+- **Local only** — runs via Docker + `pnpm dev`; not deployed to a public URL yet.
+- **`.md` / `.txt` / `.pdf`** — scanned PDFs (image-only, no text layer) won't extract;
+  there is no OCR.
 - **Worker must be running** — uploads sit in `QUEUED` until `pnpm worker` picks them up.
 - **No authentication / multi-tenancy.**
-- Upload size cap: 5 MB.
+- Upload size cap: 10 MB.
 
 ---
 
@@ -554,6 +580,6 @@ exact KNN so eval numbers are deterministic and reproducible.
 | 4 | Hybrid blend + live `/eval` page | ✅ |
 | 5 | Search UX polish + documents management | ✅ |
 | 6 | Real infra: MinIO (6a), BullMQ worker (6b), Elasticsearch (6c) | ✅ |
-| 7 | PDF support, realistic seed, deploy to a live URL | ⏳ |
+| 7 | PDF support ✅ · realistic demo seed ✅ · deploy to a live URL ⏳ | 🚧 |
 
 See [`plan.md`](./plan.md) for the full build plan.
