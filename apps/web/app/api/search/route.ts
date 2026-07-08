@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { embedOne, toVectorLiteral } from "@/lib/embed";
 import { blendHybrid, DEFAULT_HYBRID_WEIGHT, type Scored } from "@/lib/hybrid";
+import { keywordSearch, HL_START, HL_END } from "@/lib/es";
 
 export const runtime = "nodejs";
 
@@ -13,18 +14,12 @@ interface Candidate {
   documentId: string;
   title: string;
   fileType: string;
-  snippet: string; // keyword: ts_headline w/ sentinels; semantic: raw content
-  score: number; // keyword: ts_rank; semantic: cosine similarity
+  snippet: string; // keyword: ES highlight w/ sentinels; semantic: raw content
+  score: number; // keyword: BM25; semantic: cosine similarity
 }
 
 const CANDIDATE_LIMIT = 30;
 const RESULT_LIMIT = 20;
-
-// Sentinel tokens for ts_headline so we can HTML-escape the snippet ourselves and
-// then re-introduce <mark> safely (avoids XSS from raw chunk content).
-const HL_START = "@@HL_START@@";
-const HL_END = "@@HL_END@@";
-const HEADLINE_OPTS = `StartSel=${HL_START}, StopSel=${HL_END}, MaxFragments=2, MinWords=8, MaxWords=28, FragmentDelimiter= … `;
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -33,22 +28,18 @@ function renderHighlighted(raw: string): string {
   return escapeHtml(raw).split(HL_START).join("<mark>").split(HL_END).join("</mark>");
 }
 
-function fetchKeyword(q: string, fileType: string | null): Promise<Candidate[]> {
-  return prisma.$queryRaw<Candidate[]>`
-    SELECT
-      dc.id::text           AS "chunkId",
-      dc."documentId"::text AS "documentId",
-      d.title               AS title,
-      d."fileType"          AS "fileType",
-      ts_headline('english', dc.content, plainto_tsquery('english', ${q}), ${HEADLINE_OPTS}) AS snippet,
-      ts_rank(to_tsvector('english', dc.content), plainto_tsquery('english', ${q})) AS score
-    FROM document_chunks dc
-    JOIN documents d ON d.id = dc."documentId"
-    WHERE to_tsvector('english', dc.content) @@ plainto_tsquery('english', ${q})
-      AND (${fileType}::text IS NULL OR d."fileType" = ${fileType})
-    ORDER BY score DESC
-    LIMIT ${CANDIDATE_LIMIT}
-  `;
+// Keyword search runs on Elasticsearch (BM25 + highlighting). The sentinel-delimited
+// snippet is HTML-escaped then re-marked in formatKeyword/hybridSearch (XSS-safe).
+async function fetchKeyword(q: string, fileType: string | null): Promise<Candidate[]> {
+  const hits = await keywordSearch(q, fileType, CANDIDATE_LIMIT);
+  return hits.map((h) => ({
+    chunkId: h.chunkId,
+    documentId: h.documentId,
+    title: h.title,
+    fileType: h.fileType,
+    snippet: h.snippet,
+    score: h.score,
+  }));
 }
 
 async function fetchSemantic(q: string, fileType: string | null): Promise<Candidate[]> {
@@ -88,7 +79,7 @@ function formatKeyword(cands: Candidate[]): Hit[] {
     title: c.title,
     fileType: c.fileType,
     snippet: renderHighlighted(c.snippet),
-    score: Number((c.score / max).toFixed(3)), // ts_rank is unbounded → normalize for display
+    score: Number((c.score / max).toFixed(3)), // BM25 is unbounded → normalize for display
     source: "keyword" as const,
   }));
 }

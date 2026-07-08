@@ -33,6 +33,25 @@ services:
       timeout: 3s
       retries: 10
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: indexflow-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false" # local dev only — no auth
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      ingest.geoip.downloader.enabled: "false"
+    ports:
+      - "9200:9200"
+    volumes:
+      - indexflow_esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
   minio:
     image: minio/minio:latest
     container_name: indexflow-minio
@@ -51,3 +70,4 @@ volumes:
   indexflow_pgdata:
   indexflow_miniodata:
   indexflow_redisdata:
+  indexflow_esdata:

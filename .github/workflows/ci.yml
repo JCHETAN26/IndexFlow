@@ -49,8 +49,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+          ingest.geoip.downloader.enabled: "false"
+        ports:
+          - 9200:9200
     env:
       DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
+      ES_URL: http://localhost:9200
     steps:
       - uses: actions/checkout@v4
 
@@ -68,10 +78,25 @@ jobs:
 
       # The eval/backfill scripts load apps/web/.env via --env-file; create it in CI.
       - name: Write env file
-        run: echo "DATABASE_URL=${DATABASE_URL}" > apps/web/.env
+        run: |
+          {
+            echo "DATABASE_URL=${DATABASE_URL}"
+            echo "ES_URL=${ES_URL}"
+          } > apps/web/.env
 
       - name: Apply migrations
         run: pnpm --filter @indexflow/web prisma migrate deploy
+
+      # ES image ships without curl, so wait from the runner instead of a container healthcheck.
+      - name: Wait for Elasticsearch
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf "${ES_URL}/_cluster/health?wait_for_status=yellow&timeout=5s" >/dev/null; then
+              echo "Elasticsearch is up."; exit 0
+            fi
+            sleep 3
+          done
+          echo "Elasticsearch did not become ready in time." >&2; exit 1
 
       - name: Run retrieval evaluation (quality gate)
         run: pnpm --filter @indexflow/web eval

@@ -1,16 +1,24 @@
 /**
  * Shared retrieval evaluation harness.
  *
- * Seeds a labeled corpus inside a transaction that is ROLLED BACK, so it never touches
- * real data. Eval searches are scoped to the corpus document ids, and index scans are
- * disabled so semantic ranking is exact (brute-force KNN) rather than approximate HNSW.
+ * Seeds a labeled corpus into BOTH stores, mirroring production: semantic candidates come
+ * from pgvector inside a Postgres transaction that is ROLLED BACK (never touches real
+ * data), and keyword candidates come from a real Elasticsearch BM25 query against an
+ * EPHEMERAL index that is torn down afterward. Index scans are disabled so semantic
+ * ranking is exact (brute-force KNN) rather than approximate HNSW.
+ *
+ * Doc/chunk ids are generated in app code so the same id keys a Postgres row and an ES
+ * document — the hybrid blend correlates keyword + semantic hits by chunk id, exactly as
+ * the production search route does.
  *
  * Used by the CLI (eval/run.ts) and the API route (app/api/eval/route.ts).
  */
+import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma";
 import { chunkText } from "../lib/chunk";
 import { embed, toVectorLiteral } from "../lib/embed";
 import { blendHybrid, type Scored } from "../lib/hybrid";
+import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsChunk } from "../lib/es";
 import corpus from "./corpus.json";
 import queries from "./queries.json";
 
@@ -105,10 +113,14 @@ function ranksFor(evals: QueryEval[], strat: Strategy, weight: number): (number 
 
 // ── main ──────────────────────────────────────────────────────────────────
 export async function runEvaluation(): Promise<EvalReport> {
-  const chunks: { fileName: string; index: number; content: string; tokenCount: number }[] = [];
+  // Pre-generate ids in app code so the same id keys the Postgres row and the ES document.
+  const idByFile = new Map<string, string>();
+  for (const doc of corpus) idByFile.set(doc.fileName, randomUUID());
+
+  const chunks: { fileName: string; chunkId: string; index: number; content: string; tokenCount: number }[] = [];
   for (const doc of corpus) {
     for (const c of chunkText(doc.content)) {
-      chunks.push({ fileName: doc.fileName, index: c.index, content: c.content, tokenCount: c.tokenCount });
+      chunks.push({ fileName: doc.fileName, chunkId: randomUUID(), index: c.index, content: c.content, tokenCount: c.tokenCount });
     }
   }
 
@@ -116,62 +128,76 @@ export async function runEvaluation(): Promise<EvalReport> {
   const queryVecs = await embed(queries.map((q) => q.q));
 
   const evals: QueryEval[] = [];
+  const titleByFile = new Map(corpus.map((d) => [d.fileName, d.title]));
 
+  // Ephemeral ES index for this run's keyword strategy (torn down in finally).
+  const esIndex = await createEphemeralIndex();
   try {
-    await prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRawUnsafe("SET LOCAL enable_indexscan = off");
-        await tx.$executeRawUnsafe("SET LOCAL enable_bitmapscan = off");
+    const esChunks: EsChunk[] = chunks.map((c) => ({
+      chunkId: c.chunkId,
+      documentId: idByFile.get(c.fileName)!,
+      chunkIndex: c.index,
+      title: titleByFile.get(c.fileName) ?? c.fileName,
+      fileType: "md",
+      content: c.content,
+    }));
+    await indexChunks(esChunks, esIndex, "wait_for");
 
-        const idByFile = new Map<string, string>();
-        for (const doc of corpus) {
-          const [{ id }] = await tx.$queryRaw<{ id: string }[]>`
-            INSERT INTO documents (id, title, "fileName", "fileType", status, "uploadedAt", "indexedAt")
-            VALUES (gen_random_uuid(), ${doc.title}, ${doc.fileName}, 'md', 'INDEXED', now(), now())
-            RETURNING id::text AS id
-          `;
-          idByFile.set(doc.fileName, id);
-        }
-        for (let i = 0; i < chunks.length; i++) {
-          const c = chunks[i];
-          await tx.$executeRaw`
-            INSERT INTO document_chunks (id, "documentId", "chunkIndex", content, "tokenCount", embedding, "createdAt")
-            VALUES (gen_random_uuid(), ${idByFile.get(c.fileName)}::uuid, ${c.index}, ${c.content}, ${c.tokenCount}, ${toVectorLiteral(chunkVecs[i])}::vector, now())
-          `;
-        }
+    // Keyword strategy: real BM25 against the ephemeral ES index (no transaction needed).
+    const kwByQuery: ChunkHit[][] = [];
+    for (const query of queries) {
+      const hits = await keywordSearch(query.q, null, chunks.length, esIndex);
+      kwByQuery.push(hits.map((h) => ({ chunkId: h.chunkId, docId: h.documentId, score: h.score })));
+    }
 
-        const corpusIds = [...idByFile.values()];
+    // Semantic strategy: exact pgvector KNN inside a rolled-back transaction.
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe("SET LOCAL enable_indexscan = off");
+          await tx.$executeRawUnsafe("SET LOCAL enable_bitmapscan = off");
 
-        for (let i = 0; i < queries.length; i++) {
-          const query = queries[i];
-          const kw = await tx.$queryRaw<ChunkHit[]>`
-            SELECT dc.id::text AS "chunkId", dc."documentId"::text AS "docId",
-                   ts_rank(to_tsvector('english', dc.content), plainto_tsquery('english', ${query.q})) AS score
-            FROM document_chunks dc
-            WHERE dc."documentId"::text = ANY(${corpusIds})
-              AND to_tsvector('english', dc.content) @@ plainto_tsquery('english', ${query.q})
-            ORDER BY score DESC
-          `;
-          const vec = toVectorLiteral(queryVecs[i]);
-          const sm = await tx.$queryRaw<ChunkHit[]>`
-            SELECT dc.id::text AS "chunkId", dc."documentId"::text AS "docId",
-                   1 - (dc.embedding <=> ${vec}::vector) AS score
-            FROM document_chunks dc
-            WHERE dc."documentId"::text = ANY(${corpusIds}) AND dc.embedding IS NOT NULL
-            ORDER BY dc.embedding <=> ${vec}::vector
-            LIMIT 10
-          `;
-          // Compare against document ids, not filenames (kw/sm rows carry ids).
-          const relevantIds = query.relevant.map((f) => idByFile.get(f)!);
-          evals.push({ kind: query.kind as QueryKind, relevant: relevantIds, kw, sm });
-        }
+          for (const doc of corpus) {
+            await tx.$executeRaw`
+              INSERT INTO documents (id, title, "fileName", "fileType", status, "uploadedAt", "indexedAt")
+              VALUES (${idByFile.get(doc.fileName)}::uuid, ${doc.title}, ${doc.fileName}, 'md', 'INDEXED', now(), now())
+            `;
+          }
+          for (let i = 0; i < chunks.length; i++) {
+            const c = chunks[i];
+            await tx.$executeRaw`
+              INSERT INTO document_chunks (id, "documentId", "chunkIndex", content, "tokenCount", embedding, "createdAt")
+              VALUES (${c.chunkId}::uuid, ${idByFile.get(c.fileName)}::uuid, ${c.index}, ${c.content}, ${c.tokenCount}, ${toVectorLiteral(chunkVecs[i])}::vector, now())
+            `;
+          }
 
-        throw new Rollback();
-      },
-      { timeout: 60_000, maxWait: 15_000 },
-    );
-  } catch (e) {
-    if (!(e instanceof Rollback)) throw e;
+          const corpusIds = [...idByFile.values()];
+
+          for (let i = 0; i < queries.length; i++) {
+            const query = queries[i];
+            const vec = toVectorLiteral(queryVecs[i]);
+            const sm = await tx.$queryRaw<ChunkHit[]>`
+              SELECT dc.id::text AS "chunkId", dc."documentId"::text AS "docId",
+                     1 - (dc.embedding <=> ${vec}::vector) AS score
+              FROM document_chunks dc
+              WHERE dc."documentId"::text = ANY(${corpusIds}) AND dc.embedding IS NOT NULL
+              ORDER BY dc.embedding <=> ${vec}::vector
+              LIMIT 10
+            `;
+            // Compare against document ids, not filenames (kw/sm rows carry ids).
+            const relevantIds = query.relevant.map((f) => idByFile.get(f)!);
+            evals.push({ kind: query.kind as QueryKind, relevant: relevantIds, kw: kwByQuery[i], sm });
+          }
+
+          throw new Rollback();
+        },
+        { timeout: 60_000, maxWait: 15_000 },
+      );
+    } catch (e) {
+      if (!(e instanceof Rollback)) throw e;
+    }
+  } finally {
+    await deleteIndex(esIndex).catch(() => {});
   }
 
   // Weight sweep → pick the best hybrid weight by overall MRR (tie-break toward 0.5).
