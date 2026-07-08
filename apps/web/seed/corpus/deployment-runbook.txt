@@ -1,0 +1,20 @@
+Deployment Runbook
+
+Prerequisites
+- The web app deploys to a Node host; the ingestion worker runs as a separate process.
+- Postgres must have the pgvector extension enabled before the first migration.
+- Elasticsearch, Redis, and the object store (S3-compatible) must be reachable from both
+  the web app and the worker.
+
+Release steps
+1. Run the migrations against the production database (prisma migrate deploy).
+2. Deploy the web app.
+3. Deploy the worker. Uploads sit in the QUEUED state until a worker is running.
+4. Smoke test: upload a small file, confirm the job reaches COMPLETED, run a search.
+
+Rollback
+Roll back the web app and worker to the previous release together. Migrations are
+forward-only; a bad migration is fixed with a new corrective migration, not a down-migration.
+
+Config keys
+DATABASE_URL, REDIS_URL, ES_URL, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY.

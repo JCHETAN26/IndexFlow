@@ -10,6 +10,7 @@
     "prisma": "prisma",
     "embed:backfill": "tsx --env-file=.env scripts/backfill-embeddings.ts",
     "es:backfill": "tsx --env-file=.env scripts/backfill-es.ts",
+    "seed": "tsx --env-file=.env scripts/seed.ts",
     "eval": "tsx --env-file=.env eval/run.ts",
     "worker": "tsx --env-file=.env worker/index.ts",
     "postinstall": "prisma generate"
@@ -26,6 +27,7 @@
     "next": "^15.1.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "unpdf": "^1.6.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {

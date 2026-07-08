@@ -79,15 +79,15 @@ export default function UploadPage() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Upload a file</h1>
       <p className="mt-1 text-sm text-neutral-500">
-        Supported: <code>.md</code>, <code>.txt</code>. Files are stored, then indexed
-        asynchronously by the ingestion worker.
+        Supported: <code>.md</code>, <code>.txt</code>, <code>.pdf</code>. Files are
+        stored, then indexed asynchronously by the ingestion worker.
       </p>
 
       <label className="mt-6 flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-neutral-300 px-6 py-12 text-center transition-colors hover:border-neutral-400">
         <input
           ref={inputRef}
           type="file"
-          accept=".md,.txt,text/markdown,text/plain"
+          accept=".md,.txt,.pdf,text/markdown,text/plain,application/pdf"
           className="hidden"
           disabled={busy}
           onChange={(e) => {
@@ -98,7 +98,7 @@ export default function UploadPage() {
         <span className="text-sm font-medium">
           {busy ? "Uploading…" : "Click to choose a file"}
         </span>
-        <span className="mt-1 text-xs text-neutral-400">.md or .txt, up to 5 MB</span>
+        <span className="mt-1 text-xs text-neutral-400">.md, .txt or .pdf, up to 10 MB</span>
       </label>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}

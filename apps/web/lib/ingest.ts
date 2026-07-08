@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "./prisma";
 import { getObject } from "./storage";
+import { extractText } from "./extract";
 import { chunkText } from "./chunk";
 import { embed, toVectorLiteral } from "./embed";
 import { ensureChunkIndex, indexChunks, deleteDocumentChunks, type EsChunk } from "./es";
@@ -21,11 +22,10 @@ export async function ingestDocument(documentId: string): Promise<number> {
   }
 
   const { body } = await getObject(doc.storageKey);
-  // Step 6b/6c handle .md/.txt (utf8). PDF extraction arrives in Step 7.
-  const text = body.toString("utf8");
+  const text = await extractText(body, doc.fileType);
   const chunks = chunkText(text);
   if (chunks.length === 0) {
-    throw new Error(`Document ${documentId} produced no chunks.`);
+    throw new Error(`Document ${documentId} produced no chunks (empty or unreadable file).`);
   }
 
   const vectors = await embed(chunks.map((c) => c.content));
