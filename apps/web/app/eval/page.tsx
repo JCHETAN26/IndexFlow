@@ -31,6 +31,23 @@ interface EvalReport {
   passed: boolean;
 }
 
+interface RagReport {
+  numAnswerable: number;
+  numUnanswerable: number;
+  ragK: number;
+  genModel: string;
+  judgeModel: string;
+  selfJudged: boolean;
+  faithfulness: number;
+  answerRelevance: number;
+  citationCorrectness: number;
+  contextRecall: number;
+  refusalCorrectness: number;
+  gate: GateRow[];
+  passed: boolean;
+  tookMs: number;
+}
+
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const f2 = (n: number) => n.toFixed(2);
 
@@ -38,6 +55,10 @@ export default function EvalPage() {
   const [report, setReport] = useState<EvalReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [rag, setRag] = useState<RagReport | null>(null);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragError, setRagError] = useState<string | null>(null);
 
   const run = async () => {
     setLoading(true);
@@ -51,6 +72,21 @@ export default function EvalPage() {
       setError(e instanceof Error ? e.message : "Eval failed");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runRag = async () => {
+    setRagLoading(true);
+    setRagError(null);
+    try {
+      const res = await fetch("/api/eval/rag");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? `Generation eval failed (${res.status})`);
+      setRag(json as RagReport);
+    } catch (e) {
+      setRagError(e instanceof Error ? e.message : "Generation eval failed");
+    } finally {
+      setRagLoading(false);
     }
   };
 
@@ -213,6 +249,98 @@ export default function EvalPage() {
           </section>
         </div>
       )}
+
+      {/* ── Generation quality (RAG + LLM-as-judge) ───────────────────────── */}
+      <div className="mt-14 border-t border-neutral-200 pt-10">
+        <h1 className="text-2xl font-semibold tracking-tight">Generation quality</h1>
+        <p className="mt-1 text-sm text-neutral-500">
+          The retriever feeds a local model (llama3.2), which answers <em>only</em> from
+          the retrieved passages and cites each claim. Local judges score it — faithfulness
+          per claim (bespoke-minicheck), relevance and citations (qwen2.5); unanswerable
+          questions test the refusal guardrail. Runs live on Ollama (no keys) — not part of CI.
+        </p>
+
+        <button
+          onClick={runRag}
+          disabled={ragLoading}
+          className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {ragLoading ? "Judging answers…" : rag ? "Re-run generation eval" : "Run generation eval"}
+        </button>
+        {ragLoading && (
+          <p className="mt-2 text-xs text-neutral-400">
+            Generating and judging ~20 answers with Claude — this takes a bit.
+          </p>
+        )}
+        {ragError && <p className="mt-4 text-sm text-red-600">{ragError}</p>}
+
+        {rag && (
+          <div className="mt-8 space-y-10">
+            <p className="text-xs text-neutral-500">
+              {rag.numAnswerable} answerable · {rag.numUnanswerable} unanswerable · k={rag.ragK} ·{" "}
+              gen <span className="font-medium text-neutral-700">{rag.genModel}</span> · judge{" "}
+              <span className="font-medium text-neutral-700">{rag.judgeModel}</span> · {rag.tookMs} ms
+              {rag.selfJudged && (
+                <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] uppercase text-amber-700">
+                  self-judged
+                </span>
+              )}
+            </p>
+
+            <section>
+              <h2 className="text-sm font-medium text-neutral-500">Scores</h2>
+              <div className="mt-3 space-y-1">
+                {[
+                  { label: "Faithfulness (answerable)", value: rag.faithfulness },
+                  { label: "Answer relevance (answerable)", value: rag.answerRelevance },
+                  { label: "Citation correctness (answerable)", value: rag.citationCorrectness },
+                  { label: "Context recall (answerable)", value: rag.contextRecall },
+                  { label: "Refusal correctness (unanswerable)", value: rag.refusalCorrectness },
+                ].map((m) => (
+                  <div key={m.label} className="flex items-center gap-3 text-xs">
+                    <span className="w-56 text-neutral-500">{m.label}</span>
+                    <div className="h-4 flex-1 rounded bg-neutral-100">
+                      <div className="h-4 rounded bg-blue-500" style={{ width: `${m.value * 100}%` }} />
+                    </div>
+                    <span className="w-10 text-right tabular-nums text-neutral-600">{pct(m.value)}</span>
+                  </div>
+                ))}
+              </div>
+              {rag.selfJudged && (
+                <p className="mt-2 text-xs text-neutral-400">
+                  Generation and judge use the same model — a model grading its own output
+                  can be lenient. Set <code>JUDGE_MODEL</code> to a different model to remove
+                  that bias.
+                </p>
+              )}
+            </section>
+
+            <section>
+              <h2 className="text-sm font-medium text-neutral-500">
+                Quality gate{" "}
+                <span className={rag.passed ? "text-green-600" : "text-red-600"}>
+                  {rag.passed ? "passed" : "failed"}
+                </span>
+              </h2>
+              <ul className="mt-2 space-y-1 text-sm">
+                {rag.gate.map((row) => (
+                  <li key={row.name} className="flex items-center justify-between border-b border-neutral-100 py-1.5">
+                    <span className="flex items-center gap-2">
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${row.pass ? "bg-green-500" : "bg-red-500"}`}
+                      />
+                      {row.name}
+                    </span>
+                    <span className="tabular-nums text-neutral-500">
+                      {pct(row.value)} <span className="text-neutral-300">/ floor {pct(row.floor)}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -28,6 +28,9 @@ importers:
       next:
         specifier: ^15.1.4
         version: 15.5.19(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      ollama:
+        specifier: ^0.6.3
+        version: 0.6.3
       react:
         specifier: ^19.0.0
         version: 19.2.7
@@ -1165,6 +1168,9 @@ packages:
   ohash@2.0.11:
     resolution: {integrity: sha512-RdR9FQrFwNBNXAr4GixM8YaRZRJ5PUWbKYbE5eOsrwAjJW0q2REGcf79oYPsLyskQCZG1PLN+S/K1V00joZAoQ==}
 
+  ollama@0.6.3:
+    resolution: {integrity: sha512-KEWEhIqE5wtfzEIZbDCLH51VFZ6Z3ZSa6sIOg/E/tBV8S51flyqBOXi+bRxlOYKDf8i327zG9eSTb8IJxvm3Zg==}
+
   onnxruntime-common@1.24.0-dev.20251116-b39e144322:
     resolution: {integrity: sha512-BOoomdHYmNRL5r4iQ4bMvsl2t0/hzVQ3OM3PHD0gxeXu1PmggqBv3puZicEUVOA3AtHHYmqZtjMj9FOfGrATTw==}
 
@@ -1348,6 +1354,9 @@ packages:
     peerDependenciesMeta:
       '@napi-rs/canvas':
         optional: true
+
+  whatwg-fetch@3.6.20:
+    resolution: {integrity: sha512-EqhiFU6daOA8kpjOWTL0olhVOF3i7OrFzSYiGsEMB8GcXS+RrzauAERX65xMeNWVqxA6HXH2m69Z9LaKKdisfg==}
 
   wordwrapjs@5.1.1:
     resolution: {integrity: sha512-0yweIbkINJodk27gX9LBGMzyQdBDan3s/dEAiwBOj+Mf0PPyWL6/rikalkv8EeD0E8jm4o5RXEOrFTP3NXbhJg==}
@@ -2381,6 +2390,10 @@ snapshots:
 
   ohash@2.0.11: {}
 
+  ollama@0.6.3:
+    dependencies:
+      whatwg-fetch: 3.6.20
+
   onnxruntime-common@1.24.0-dev.20251116-b39e144322: {}
 
   onnxruntime-common@1.24.3: {}
@@ -2570,6 +2583,8 @@ snapshots:
   undici@6.27.0: {}
 
   unpdf@1.6.2: {}
+
+  whatwg-fetch@3.6.20: {}
 
   wordwrapjs@5.1.1: {}
 

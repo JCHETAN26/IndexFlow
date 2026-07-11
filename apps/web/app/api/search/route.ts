@@ -1,24 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { embedOne, toVectorLiteral } from "@/lib/embed";
-import { blendHybrid, DEFAULT_HYBRID_WEIGHT, type Scored } from "@/lib/hybrid";
-import { keywordSearch, HL_START, HL_END } from "@/lib/es";
+import { blendHybrid, DEFAULT_HYBRID_WEIGHT } from "@/lib/hybrid";
+import { HL_START, HL_END } from "@/lib/es";
+import { fetchKeyword, fetchSemantic, toScored, type Candidate } from "@/lib/retrieve";
 
 export const runtime = "nodejs";
 
 type SearchMode = "keyword" | "semantic" | "hybrid";
 const MODES: SearchMode[] = ["keyword", "semantic", "hybrid"];
 
-interface Candidate {
-  chunkId: string;
-  documentId: string;
-  title: string;
-  fileType: string;
-  snippet: string; // keyword: ES highlight w/ sentinels; semantic: raw content
-  score: number; // keyword: BM25; semantic: cosine similarity
-}
-
-const CANDIDATE_LIMIT = 30;
 const RESULT_LIMIT = 20;
 
 function escapeHtml(s: string): string {
@@ -26,39 +15,6 @@ function escapeHtml(s: string): string {
 }
 function renderHighlighted(raw: string): string {
   return escapeHtml(raw).split(HL_START).join("<mark>").split(HL_END).join("</mark>");
-}
-
-// Keyword search runs on Elasticsearch (BM25 + highlighting). The sentinel-delimited
-// snippet is HTML-escaped then re-marked in formatKeyword/hybridSearch (XSS-safe).
-async function fetchKeyword(q: string, fileType: string | null): Promise<Candidate[]> {
-  const hits = await keywordSearch(q, fileType, CANDIDATE_LIMIT);
-  return hits.map((h) => ({
-    chunkId: h.chunkId,
-    documentId: h.documentId,
-    title: h.title,
-    fileType: h.fileType,
-    snippet: h.snippet,
-    score: h.score,
-  }));
-}
-
-async function fetchSemantic(q: string, fileType: string | null): Promise<Candidate[]> {
-  const vec = toVectorLiteral(await embedOne(q));
-  return prisma.$queryRaw<Candidate[]>`
-    SELECT
-      dc.id::text                          AS "chunkId",
-      dc."documentId"::text                AS "documentId",
-      d.title                              AS title,
-      d."fileType"                         AS "fileType",
-      left(dc.content, 320)                AS snippet,
-      1 - (dc.embedding <=> ${vec}::vector) AS score
-    FROM document_chunks dc
-    JOIN documents d ON d.id = dc."documentId"
-    WHERE dc.embedding IS NOT NULL
-      AND (${fileType}::text IS NULL OR d."fileType" = ${fileType})
-    ORDER BY dc.embedding <=> ${vec}::vector
-    LIMIT ${CANDIDATE_LIMIT}
-  `;
 }
 
 interface Hit {
@@ -102,8 +58,6 @@ async function hybridSearch(q: string, fileType: string | null): Promise<Hit[]> 
     fetchSemantic(q, fileType),
   ]);
 
-  const toScored = (c: Candidate[]): Scored[] =>
-    c.map((x) => ({ id: x.chunkId, score: x.score }));
   const blended = blendHybrid(toScored(keyword), toScored(semantic), DEFAULT_HYBRID_WEIGHT);
 
   // Prefer the keyword candidate (it carries a highlighted snippet); fall back to semantic.
