@@ -23,3 +23,5 @@ apps/web/prisma/*.db
 # misc
 .turbo/
 coverage/
+.gstack/
+*.tsbuildinfo

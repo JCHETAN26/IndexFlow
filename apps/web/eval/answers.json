@@ -1,0 +1,37 @@
+[
+  { "q": "Why were users seeing typing lag in the mobile editor, and how was it fixed?", "relevant": ["mobile-editor-latency.md"], "answerable": true },
+  { "q": "What does ERR_AUTH_401 mean and what should the client do about it?", "relevant": ["auth-token-expiry.md"], "answerable": true },
+  { "q": "How long do access tokens and refresh tokens stay valid?", "relevant": ["auth-token-expiry.md"], "answerable": true },
+  { "q": "What causes ERR_TIMEOUT_504 and how should clients respond to it?", "relevant": ["search-timeout.md"], "answerable": true },
+  { "q": "What happens when the database connection pool runs out of connections?", "relevant": ["db-connection-pool.md"], "answerable": true },
+  { "q": "How does the image upload pipeline handle resizing and large images?", "relevant": ["image-upload-pipeline.md"], "answerable": true },
+  { "q": "Does the app support dark mode, and does it follow the operating system setting?", "relevant": ["dark-mode-theming.md"], "answerable": true },
+  { "q": "How are failed outbound webhooks retried, and how are duplicate deliveries avoided?", "relevant": ["webhook-retries.md"], "answerable": true },
+  { "q": "What HTTP status does the gateway return when an API client is rate limited?", "relevant": ["rate-limiting.md"], "answerable": true },
+  { "q": "How does CSV export avoid exhausting server memory on very large tables?", "relevant": ["csv-export.md"], "answerable": true },
+  { "q": "How does realtime collaborative editing avoid losing concurrent edits?", "relevant": ["realtime-collab.md"], "answerable": true },
+  { "q": "Why is hybrid retrieval better than keyword or vector search on their own?", "relevant": ["fulltext-vs-vector.md"], "answerable": true },
+  { "q": "Which Postgres settings were tuned, and to what values?", "relevant": ["postgres-config-tuning.md"], "answerable": true },
+  { "q": "What does the invoice.payment_failed billing webhook trigger?", "relevant": ["billing-webhooks.md"], "answerable": true },
+  { "q": "What does the error code ERR_QUOTA_4096 mean?", "relevant": ["error-code-reference.md"], "answerable": true },
+  { "q": "What happens when a customer's card is declined?", "relevant": ["failed-payments.md"], "answerable": true },
+
+  { "q": "A client got ERR_TIMEOUT_504 on one request and an HTTP 429 on another. How should it respond to each?", "relevant": ["search-timeout.md", "rate-limiting.md"], "answerable": true },
+  { "q": "During a traffic burst the database ran out of connections. What was changed at the pool layer, and which Postgres setting was raised and to what value?", "relevant": ["db-connection-pool.md", "postgres-config-tuning.md"], "answerable": true },
+  { "q": "A workspace hit ERR_QUOTA_4096 while uploading a file. What does that code mean, and what happens to further uploads until it is resolved?", "relevant": ["error-code-reference.md", "storage-limits.md"], "answerable": true },
+  { "q": "When the invoice.payment_failed event arrives, what billing flow does it start, and separately, how are the underlying card charges retried?", "relevant": ["billing-webhooks.md", "failed-payments.md"], "answerable": true },
+
+  { "q": "How do I configure Kubernetes horizontal pod autoscaling?", "relevant": [], "answerable": false },
+  { "q": "What is the company's paid time off (PTO) policy?", "relevant": [], "answerable": false },
+  { "q": "How do I set up single sign-on with Okta?", "relevant": [], "answerable": false },
+  { "q": "Which GPU model is recommended for training the embedding model?", "relevant": [], "answerable": false },
+  { "q": "How much does the Enterprise plan cost per month?", "relevant": [], "answerable": false },
+  { "q": "How do I export my data to Google BigQuery?", "relevant": [], "answerable": false },
+
+  { "q": "Exactly how many times is a failed webhook retried before it is moved to the dead-letter queue?", "relevant": [], "answerable": false },
+  { "q": "What is the exact requests-per-second rate the API rate limiter allows for an authenticated client?", "relevant": [], "answerable": false },
+  { "q": "What image format and compression quality are resized photos stored in?", "relevant": [], "answerable": false },
+  { "q": "How many times is a declined payment retried before the subscription is paused, and how many days apart are the attempts?", "relevant": [], "answerable": false },
+  { "q": "What pool size was the database connection pool raised to after the fix?", "relevant": [], "answerable": false },
+  { "q": "Which specific CRDT algorithm does the collaborative editor use to merge concurrent edits?", "relevant": [], "answerable": false }
+]

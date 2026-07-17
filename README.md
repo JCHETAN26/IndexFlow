@@ -27,6 +27,7 @@ query set, so every ranking decision is backed by numbers.
 - [Component deep dive](#component-deep-dive)
 - [The three search modes](#the-three-search-modes)
 - [Evaluation harness](#evaluation-harness)
+- [Grounded answers (Stage B)](#grounded-answers-stage-b)
 - [Quick start](#quick-start)
 - [Scripts](#scripts)
 - [Environment variables](#environment-variables)
@@ -417,6 +418,70 @@ Run it yourself:
 pnpm --filter @indexflow/web eval     # CLI table + gate
 # or open /eval in the browser
 ```
+
+---
+
+## Grounded answers (Stage B)
+
+On top of the retriever sits a small RAG layer that turns "here are the matching
+passages" into "here's the answer, with citations" — and, in keeping with the project's
+thesis, its quality is **measured, not assumed**. It runs entirely on **local models via
+[Ollama](https://ollama.com)** — same spirit as the local MiniLM embeddings, so IndexFlow
+is a fully self-hostable RAG with **no API keys**.
+
+**Answer** (`lib/rag.ts`, `lib/llm.ts`, `app/api/answer`): a query retrieves the top-k
+hybrid chunks, which are fed to **`llama3.2:3b`** under a strict grounding prompt — answer
+*only* from the passages, cite every claim as `[n]`, and if the passages don't support an
+answer, **refuse** rather than guess. The answer streams token-by-token into the search
+page with clickable citations that jump to the source result. `lib/llm.ts` is the only
+provider-specific file; everything else consumes a provider-neutral event stream.
+
+**Measured** (`eval/answers.json`, `eval/rag-harness.ts`): the differentiator. A labeled
+set of answerable + unanswerable questions runs through the real retriever and generator,
+then **LLM judges** score each answer — **faithfulness** per claim via
+**`bespoke-minicheck`** (a purpose-built grounded-factuality checker), **answer relevance**
+and **citation correctness** via **`qwen2.5:7b`**; unanswerable questions check the
+**refusal** guardrail. Same gate/report shape as the retrieval eval. This measures
+*hallucination rate*, not just retrieval — and because the generator and judges are
+different models, there's no self-preference bias.
+
+**Latest run** — 32 questions (20 answerable + 12 unanswerable), `k=6`, `llama3.2:3b`
+generator judged by `bespoke-minicheck` + `qwen2.5:7b`:
+
+| Metric (mean over its subset) | Score |
+|---|---|
+| Faithfulness — answerable | **98%** |
+| Answer relevance — answerable | 100% |
+| Citation correctness — answerable | 100% |
+| Context recall — answerable | 100% |
+| Refusal correctness — unanswerable | **92%** |
+
+The set is deliberately built to be breakable: it mixes **multi-hop** questions (the answer
+lives in two passages that must be combined) and **adjacent-topic distractors** — questions
+whose exact on-topic document *is* retrieved but whose specific fact isn't in the text
+(e.g. "exactly how many times is a webhook retried before dead-lettering?" when the source
+says only "after several failed attempts"). Those are the classic hallucination trap, and
+they caught two real failures: a synthesis mistake on a combined 504-vs-429 question
+(faithfulness 0.5 on that item), and the model *naming* a specific CRDT algorithm the corpus
+never states instead of refusing. A believable number with a known weakness is a stronger
+signal than a suspicious 100% — the numbers above are the honest ceiling of a 3B model on a
+set designed to expose it.
+
+```bash
+# one-time: install Ollama, then
+ollama pull llama3.2:3b && ollama pull qwen2.5:7b && ollama pull bespoke-minicheck
+
+pnpm --filter @indexflow/web eval:rag   # gen + LLM-judge, CLI table + gate
+# or open /eval → "Run generation eval"
+```
+
+Needs a running Ollama server (no key). It's **on-demand, not in CI** (the retrieval eval
+remains the CI gate — LLM-judging is slow and loads several GB of models). The gate floors
+are calibrated just under the observed run above, so a real regression trips them while
+normal 3B-model run-to-run variance doesn't. On an 8 GB box the harness runs the three
+models in phases and unloads between them (only one resident at a time); a full run is
+~15–20 min. Swap in bigger local models (or a hosted provider) via `RAG_MODEL` /
+`JUDGE_MODEL` / `FAITHFULNESS_MODEL`.
 
 ---
 
