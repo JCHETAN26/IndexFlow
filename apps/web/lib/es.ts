@@ -46,7 +46,12 @@ export async function ensureChunkIndex(index: string = CHUNK_INDEX): Promise<voi
       .catch((e) => {
         if (e?.meta?.body?.error?.type !== "resource_already_exists_exception") throw e;
       });
+    return;
   }
+  // Index predates a field added to MAPPING (e.g. `acl`): putMapping is additive and
+  // idempotent, so it registers new keyword fields on an existing index without a reindex.
+  // Existing chunks are repopulated separately by es:backfill.
+  await es().indices.putMapping({ index, properties: MAPPING.properties });
 }
 
 export async function deleteIndex(index: string): Promise<void> {

@@ -121,30 +121,36 @@ async function main() {
 
   const SECRET = "codename BLUEBIRD, target Acme Corp";
   const docs: SeededDoc[] = [];
+  // Track each doc as it is created (not after all three) so a mid-seed failure still
+  // tears down whatever was already written to Postgres + Elasticsearch.
+  const seed = async (opts: Parameters<typeof seedDoc>[0]): Promise<SeededDoc> => {
+    const d = await seedDoc(opts);
+    docs.push(d);
+    return d;
+  };
   try {
     // ── Seed documents with distinct ACLs ──
-    const handbook = await seedDoc({
+    const handbook = await seed({
       title: `${TAG} Public Handbook`,
       content: "The company handbook covers general onboarding, PTO requests, and office locations.",
       isPublic: true,
       ownerId: null,
     });
     // Bob's private doc — crafted to be THE most relevant match for the secret query.
-    const bobSecret = await seedDoc({
+    const bobSecret = await seed({
       title: `${TAG} Acquisition Memo`,
       content: `Confidential M&A memo: the Q3 acquisition ${SECRET}. Do not distribute.`,
       isPublic: false,
       ownerId: bob.id,
     });
     // Engineering-only doc, owned by Carol, shared with the engineering group.
-    const engRoadmap = await seedDoc({
+    const engRoadmap = await seed({
       title: `${TAG} Engineering Roadmap`,
       content: "Engineering roadmap: migrate the search index to shards and add a cross-encoder reranker in Q4.",
       isPublic: false,
       ownerId: carol.id,
       grantGroupId: eng.id,
     });
-    docs.push(handbook, bobSecret, engRoadmap);
 
     const vAlice = await viewerFrom(alice.id);
     const vBob = await viewerFrom(bob.id);
@@ -175,6 +181,16 @@ async function main() {
     // (2) Positive control: Bob CAN retrieve his own private memo.
     const bobOnSecret = await retrievedDocIds(secretQuery, vBob);
     check(bobOnSecret.has(bobSecret.id), "Bob DOES retrieve his own private memo [positive control]");
+
+    // (2b) Per-leg control on the KEYWORD leg specifically. The leak assertions above run on
+    // the union of legs, so a silently-empty keyword leg (e.g. the `acl` field mis-mapped as
+    // `text` instead of `keyword`, which makes the `terms` filter match nothing) would still
+    // "pass" — the semantic leg alone would carry them. Proving the keyword leg both admits
+    // (Bob) and blocks (Alice) its own ACL guarantees it is actually enforcing, not just off.
+    const kwBob = new Set((await fetchKeyword(secretQuery, null, vBob)).map((c) => c.documentId));
+    check(kwBob.has(bobSecret.id), "Keyword leg returns Bob's memo for Bob [keyword ACL admits; leg is live]");
+    const kwAlice = new Set((await fetchKeyword(secretQuery, null, vAlice)).map((c) => c.documentId));
+    check(!kwAlice.has(bobSecret.id), "Keyword leg excludes Bob's memo for Alice [keyword ACL blocks]");
 
     // (3) Generation leak: Alice's RAG answer must not contain Bob's secret. Skipped if
     // Ollama is unreachable — the retrieval assertions above already guarantee it, since
