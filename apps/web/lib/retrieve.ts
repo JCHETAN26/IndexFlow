@@ -1,7 +1,9 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { embedOne, toVectorLiteral } from "@/lib/embed";
 import { blendHybrid, DEFAULT_HYBRID_WEIGHT, type Scored } from "@/lib/hybrid";
 import { keywordSearch } from "@/lib/es";
+import type { Viewer } from "@/lib/acl";
 
 /**
  * Shared retrieval used by both the search route (app/api/search) and the RAG
@@ -9,9 +11,34 @@ import { keywordSearch } from "@/lib/es";
  * hybrid blend in one place means search results and the chunks fed to the LLM come
  * from the exact same ranking — `blendHybrid` / `DEFAULT_HYBRID_WEIGHT` (lib/hybrid)
  * stay the single source of truth for the blend.
+ *
+ * Both legs are permission-aware: every entry point requires a `viewer` so a caller
+ * can't retrieve chunks the viewer can't see. Keyword filters index-side in
+ * Elasticsearch (a `terms` filter on the chunk's denormalised ACL); semantic filters
+ * with the SQL predicate below. The two encode the same rule (see lib/acl).
  */
 
 export const CANDIDATE_LIMIT = 30;
+
+/**
+ * SQL predicate (over `documents d`) that is true iff the document is visible to the
+ * viewer: public, owned by them, or granted to them directly or via a group. When
+ * `userId` is null (anonymous) every clause but `is_public` is false, so they see only
+ * public documents. Mirrors the ES `terms` filter on the same principals.
+ */
+function visibleToViewer(viewer: Viewer): Prisma.Sql {
+  const uid = viewer.userId;
+  return Prisma.sql`(
+    d.is_public
+    OR (${uid}::uuid IS NOT NULL AND d.owner_id = ${uid}::uuid)
+    OR EXISTS (SELECT 1 FROM document_grants g WHERE g.document_id = d.id AND g.user_id = ${uid}::uuid)
+    OR EXISTS (
+      SELECT 1 FROM document_grants g
+      JOIN group_members gm ON gm.group_id = g.group_id AND gm.user_id = ${uid}::uuid
+      WHERE g.document_id = d.id
+    )
+  )`;
+}
 
 export interface Candidate {
   chunkId: string;
@@ -27,9 +54,10 @@ export interface Candidate {
 export async function fetchKeyword(
   q: string,
   fileType: string | null,
+  viewer: Viewer,
   limit: number = CANDIDATE_LIMIT,
 ): Promise<Candidate[]> {
-  const hits = await keywordSearch(q, fileType, limit);
+  const hits = await keywordSearch(q, fileType, limit, undefined, viewer.principals);
   return hits.map((h) => ({
     chunkId: h.chunkId,
     documentId: h.documentId,
@@ -43,6 +71,7 @@ export async function fetchKeyword(
 export async function fetchSemantic(
   q: string,
   fileType: string | null,
+  viewer: Viewer,
   limit: number = CANDIDATE_LIMIT,
 ): Promise<Candidate[]> {
   const vec = toVectorLiteral(await embedOne(q));
@@ -58,6 +87,7 @@ export async function fetchSemantic(
     JOIN documents d ON d.id = dc."documentId"
     WHERE dc.embedding IS NOT NULL
       AND (${fileType}::text IS NULL OR d."fileType" = ${fileType})
+      AND ${visibleToViewer(viewer)}
     ORDER BY dc.embedding <=> ${vec}::vector
     LIMIT ${limit}
   `;
@@ -87,12 +117,13 @@ export interface RetrievedContext {
  */
 export async function retrieveContexts(
   query: string,
-  k = 6,
+  k: number,
+  viewer: Viewer,
   fileType: string | null = null,
 ): Promise<RetrievedContext[]> {
   const [keyword, semantic] = await Promise.all([
-    fetchKeyword(query, fileType),
-    fetchSemantic(query, fileType),
+    fetchKeyword(query, fileType, viewer),
+    fetchSemantic(query, fileType, viewer),
   ]);
   const blended = blendHybrid(toScored(keyword), toScored(semantic), DEFAULT_HYBRID_WEIGHT);
   const topIds = blended.slice(0, k).map((b) => b.id);

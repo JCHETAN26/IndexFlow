@@ -11,6 +11,9 @@ jobs:
     env:
       # Build never connects to the DB, but Prisma + Next want the var present.
       DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
+      # Auth.js reads its secret lazily at request time, but set a dummy so the build
+      # is deterministic. No real Google creds needed to compile.
+      AUTH_SECRET: ci-build-only-not-a-real-secret
     steps:
       - uses: actions/checkout@v4
 

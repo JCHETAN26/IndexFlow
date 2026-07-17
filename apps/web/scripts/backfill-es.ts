@@ -6,6 +6,7 @@
  */
 import { prisma } from "../lib/prisma";
 import { ensureChunkIndex, indexChunks, type EsChunk } from "../lib/es";
+import { aclTokens } from "../lib/acl";
 
 const BATCH = 200;
 
@@ -25,6 +26,13 @@ async function main() {
     return;
   }
 
+  // Precompute each document's ACL tokens so every backfilled chunk carries the same
+  // permission list the ingest path writes (keeps the keyword index permission-aware).
+  const docs = await prisma.document.findMany({
+    select: { id: true, isPublic: true, ownerId: true, grants: { select: { userId: true, groupId: true } } },
+  });
+  const aclByDoc = new Map(docs.map((d) => [d.id, aclTokens(d)]));
+
   await ensureChunkIndex();
   console.log(`Indexing ${rows.length} chunk(s) into Elasticsearch…`);
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -35,6 +43,7 @@ async function main() {
       title: r.title,
       fileType: r.fileType,
       content: r.content,
+      acl: aclByDoc.get(r.documentId) ?? [],
     }));
     await indexChunks(batch, undefined, i + BATCH >= rows.length ? "wait_for" : false);
     console.log(`  ${Math.min(i + BATCH, rows.length)}/${rows.length}`);

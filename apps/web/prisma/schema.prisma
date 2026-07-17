@@ -9,6 +9,73 @@ datasource db {
   extensions = [vector]
 }
 
+// ── Identity (Auth.js / NextAuth with the Prisma adapter) ──────────────────
+// Stage A: sign-in + users. The Account table also stores per-provider OAuth
+// tokens (access/refresh), which Stage C reuses to call the Google Drive API on
+// the user's behalf. Field names are the adapter's contract; @map keeps the DB
+// snake_case like the rest of the schema.
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  accounts Account[]
+  sessions Session[]
+
+  // ── Permissions (Stage: permission-aware search) ──
+  ownedDocuments   Document[]      @relation("DocumentOwner")
+  groupMemberships GroupMember[]
+  documentGrants   DocumentGrant[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(uuid()) @db.Uuid
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid()) @db.Uuid
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
 enum DocumentStatus {
   UPLOADED
   INDEXING
@@ -33,10 +100,68 @@ model Document {
   uploadedAt DateTime       @default(now())
   indexedAt  DateTime?
 
+  // ── Permissions ──
+  // A document is visible to a viewer if it is public, they own it, or a grant
+  // targets them (directly, or a group they belong to). `isPublic` defaults to
+  // false (restrictive): a new upload is private to its owner until shared. The
+  // ACL is denormalised into each Elasticsearch chunk (an `acl` principal list)
+  // so keyword search filters at the index; Postgres enforces the same rule via
+  // joins on the tables below (see lib/acl.ts, lib/retrieve.ts).
+  ownerId  String?  @map("owner_id") @db.Uuid
+  isPublic Boolean  @default(false) @map("is_public")
+
+  owner  User?           @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  grants DocumentGrant[]
+
   chunks DocumentChunk[]
   jobs   IngestionJob[]
 
+  @@index([ownerId])
   @@map("documents")
+}
+
+// A user or a group to which visibility of a set of resources is granted.
+model Group {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  members GroupMember[]
+  grants  DocumentGrant[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  userId  String @map("user_id") @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@index([groupId])
+  @@map("group_members")
+}
+
+// One access grant on a document to exactly one principal — either a user
+// (`userId`) or a group (`groupId`). Ownership and `isPublic` are handled on the
+// Document itself; this table holds explicit shares beyond those.
+model DocumentGrant {
+  id         String  @id @default(uuid()) @db.Uuid
+  documentId String  @map("document_id") @db.Uuid
+  userId     String? @map("user_id") @db.Uuid
+  groupId    String? @map("group_id") @db.Uuid
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group    Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, userId, groupId])
+  @@index([documentId])
+  @@index([userId])
+  @@index([groupId])
+  @@map("document_grants")
 }
 
 model IngestionJob {

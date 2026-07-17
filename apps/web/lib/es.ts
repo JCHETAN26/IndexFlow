@@ -29,6 +29,9 @@ const MAPPING = {
     title: { type: "text" },
     file_type: { type: "keyword" },
     content: { type: "text" },
+    // Denormalised ACL principal tokens ("public" | "user:<id>" | "group:<id>") for
+    // permission-aware keyword search — filtered with `terms` against the viewer (lib/acl).
+    acl: { type: "keyword" },
     metadata: { type: "object", enabled: false },
     created_at: { type: "date" },
   },
@@ -43,7 +46,12 @@ export async function ensureChunkIndex(index: string = CHUNK_INDEX): Promise<voi
       .catch((e) => {
         if (e?.meta?.body?.error?.type !== "resource_already_exists_exception") throw e;
       });
+    return;
   }
+  // Index predates a field added to MAPPING (e.g. `acl`): putMapping is additive and
+  // idempotent, so it registers new keyword fields on an existing index without a reindex.
+  // Existing chunks are repopulated separately by es:backfill.
+  await es().indices.putMapping({ index, properties: MAPPING.properties });
 }
 
 export async function deleteIndex(index: string): Promise<void> {
@@ -64,6 +72,7 @@ export interface EsChunk {
   title: string;
   fileType: string;
   content: string;
+  acl?: string[]; // ACL principal tokens for this chunk's document (lib/acl aclTokens)
   createdAt?: Date;
 }
 
@@ -84,6 +93,7 @@ export async function indexChunks(
       title: c.title,
       file_type: c.fileType,
       content: c.content,
+      acl: c.acl ?? [],
       created_at: c.createdAt ?? new Date(),
     },
   ]);
@@ -92,6 +102,34 @@ export async function indexChunks(
     const firstErr = res.items.find((i) => i.index?.error)?.index?.error;
     throw new Error(`ES bulk index failed: ${JSON.stringify(firstErr)}`);
   }
+}
+
+/**
+ * Re-set the ACL principal list on every chunk of a document in place, without
+ * re-embedding — used when ownership/grants change after indexing. No-op if the index
+ * or document isn't present yet.
+ */
+export async function updateDocumentAcl(
+  documentId: string,
+  acl: string[],
+  index: string = CHUNK_INDEX,
+  refresh: Refresh = false,
+): Promise<void> {
+  await es()
+    .updateByQuery(
+      {
+        index,
+        query: { term: { document_id: documentId } },
+        script: { source: "ctx._source.acl = params.acl", params: { acl } },
+        conflicts: "proceed",
+        refresh: refresh === true,
+      },
+      { ignore: [404] },
+    )
+    .catch((e) => {
+      if (e?.meta?.statusCode === 404) return;
+      throw e;
+    });
 }
 
 /** Remove all chunks for a document. No-op if the index doesn't exist yet. */
@@ -137,7 +175,15 @@ export async function keywordSearch(
   fileType: string | null,
   size: number,
   index: string = CHUNK_INDEX,
+  aclPrincipals: string[] | null = null,
 ): Promise<EsKeywordHit[]> {
+  // Permission-aware filter: keep only chunks whose document ACL intersects the viewer's
+  // principals. `null` = no ACL filter (eval/admin contexts); an empty array matches
+  // nothing. This runs index-side so restricted chunks never reach the ranker.
+  const filter: Record<string, unknown>[] = [];
+  if (fileType) filter.push({ term: { file_type: fileType } });
+  if (aclPrincipals) filter.push({ terms: { acl: aclPrincipals } });
+
   const res = await es()
     .search<ChunkSource>(
       {
@@ -146,7 +192,7 @@ export async function keywordSearch(
         query: {
           bool: {
             must: [{ multi_match: { query: q, fields: ["content", "title^2"], operator: "or" } }],
-            ...(fileType ? { filter: [{ term: { file_type: fileType } }] } : {}),
+            ...(filter.length ? { filter } : {}),
           },
         },
         highlight: {
