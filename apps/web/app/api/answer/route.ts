@@ -71,7 +71,12 @@ export async function POST(req: NextRequest) {
         }
         if (!closed) controller.close();
       } catch (e) {
-        send({ type: "error", error: e instanceof Error ? e.message : "Answer generation failed" });
+        // Log the real cause server-side; never leak internals (DB host, stack) to the client.
+        console.error("answer route failed", e);
+        send({
+          type: "error",
+          error: "Couldn't generate an answer — the search backend may be unavailable.",
+        });
         if (!closed) controller.close();
       }
     },

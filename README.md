@@ -445,6 +445,28 @@ and **citation correctness** via **`qwen2.5:7b`**; unanswerable questions check 
 *hallucination rate*, not just retrieval — and because the generator and judges are
 different models, there's no self-preference bias.
 
+**Latest run** — 32 questions (20 answerable + 12 unanswerable), `k=6`, `llama3.2:3b`
+generator judged by `bespoke-minicheck` + `qwen2.5:7b`:
+
+| Metric (mean over its subset) | Score |
+|---|---|
+| Faithfulness — answerable | **98%** |
+| Answer relevance — answerable | 100% |
+| Citation correctness — answerable | 100% |
+| Context recall — answerable | 100% |
+| Refusal correctness — unanswerable | **92%** |
+
+The set is deliberately built to be breakable: it mixes **multi-hop** questions (the answer
+lives in two passages that must be combined) and **adjacent-topic distractors** — questions
+whose exact on-topic document *is* retrieved but whose specific fact isn't in the text
+(e.g. "exactly how many times is a webhook retried before dead-lettering?" when the source
+says only "after several failed attempts"). Those are the classic hallucination trap, and
+they caught two real failures: a synthesis mistake on a combined 504-vs-429 question
+(faithfulness 0.5 on that item), and the model *naming* a specific CRDT algorithm the corpus
+never states instead of refusing. A believable number with a known weakness is a stronger
+signal than a suspicious 100% — the numbers above are the honest ceiling of a 3B model on a
+set designed to expose it.
+
 ```bash
 # one-time: install Ollama, then
 ollama pull llama3.2:3b && ollama pull qwen2.5:7b && ollama pull bespoke-minicheck
@@ -454,10 +476,12 @@ pnpm --filter @indexflow/web eval:rag   # gen + LLM-judge, CLI table + gate
 ```
 
 Needs a running Ollama server (no key). It's **on-demand, not in CI** (the retrieval eval
-remains the CI gate). Honest caveat: with a 3B generator, expect lower faithfulness/citation
-scores than a frontier model would give, and treat the gate floors as targets to
-recalibrate against your first real run. Swap in bigger local models (or a hosted provider)
-via `RAG_MODEL` / `JUDGE_MODEL` / `FAITHFULNESS_MODEL`.
+remains the CI gate — LLM-judging is slow and loads several GB of models). The gate floors
+are calibrated just under the observed run above, so a real regression trips them while
+normal 3B-model run-to-run variance doesn't. On an 8 GB box the harness runs the three
+models in phases and unloads between them (only one resident at a time); a full run is
+~15–20 min. Swap in bigger local models (or a hosted provider) via `RAG_MODEL` /
+`JUDGE_MODEL` / `FAITHFULNESS_MODEL`.
 
 ---
 

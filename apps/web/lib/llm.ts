@@ -59,7 +59,7 @@ Rules:
 - If the passages do not contain enough information to answer, reply with exactly this sentence and nothing else: "${REFUSAL_SENTENCE}"
 - Never invent facts, sources, or citations. If unsure, refuse using the sentence above.`;
 
-function renderContexts(contexts: AnswerContext[]): string {
+export function renderContexts(contexts: AnswerContext[]): string {
   return contexts.map((c) => `[${c.marker}] Title: ${c.title}\n${c.content}`).join("\n\n");
 }
 
@@ -100,19 +100,57 @@ export async function* streamAnswer(
   yield { type: "done", text: full.trim(), outputTokens, refused: looksLikeRefusal(full) };
 }
 
-/** Non-streaming generation for the eval harness. */
+/** Non-streaming generation for the eval harness. `keepAlive` controls model residency. */
 export async function generateAnswer(
   question: string,
   contexts: AnswerContext[],
+  keepAlive?: string | number,
 ): Promise<{ text: string; outputTokens: number | null; refused: boolean }> {
   const res = await ollama().chat({
     model: GEN_MODEL,
     messages: genMessages(question, contexts),
     stream: false,
+    keep_alive: keepAlive,
     options: { temperature: 0 },
   });
   const text = res.message.content.trim();
   return { text, outputTokens: res.eval_count ?? null, refused: looksLikeRefusal(text) };
+}
+
+/**
+ * Free a model from memory (Ollama unloads on `keep_alive: 0`). The eval harness runs the
+ * three models (generator, relevance judge, minicheck) in phases and unloads between them,
+ * so only one is ever resident — essential on an 8 GB box where all three (~11 GB) can't
+ * coexist without swap-thrashing a cold load past the client's fetch timeout.
+ */
+export async function unloadModel(model: string): Promise<void> {
+  try {
+    await ollama().generate({ model, prompt: "", keep_alive: 0 });
+  } catch {
+    // best-effort: if the unload call fails, the model just lingers until keep_alive expires
+  }
+}
+
+/**
+ * Load a model with a single, isolated request before batching work at it.
+ *
+ * Cold-loading a large model is slow (bespoke-minicheck: ~3min for its 5.5GB on an 8GB box)
+ * and Node's fetch caps a response at 300s, so firing concurrent requests at a cold model
+ * makes every one of them race the same load and time out together. Warming serialises that
+ * cost into one call. A timed-out attempt is not fatal: the server keeps loading regardless,
+ * so a retry lands on an already-resident model.
+ */
+export async function warmModel(model: string, keepAlive: string | number = "10m"): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await ollama().generate({ model, prompt: "ok", keep_alive: keepAlive, options: { num_predict: 1 } });
+      return;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 // ── LLM-as-judge ────────────────────────────────────────────────────────────
@@ -127,7 +165,7 @@ export interface JudgeResult {
 }
 
 // Split an answer into atomic claims for per-claim grounding checks.
-function splitClaims(answer: string): string[] {
+export function splitClaims(answer: string): string[] {
   return answer
     .replace(/\[\d+\]/g, " ") // strip citation markers
     .split(/(?<=[.!?])\s+/)
@@ -136,11 +174,16 @@ function splitClaims(answer: string): string[] {
 }
 
 // bespoke-minicheck: "is this claim supported by the document?" → Yes/No.
-async function claimSupported(context: string, claim: string): Promise<boolean> {
+export async function claimSupported(
+  context: string,
+  claim: string,
+  keepAlive?: string | number,
+): Promise<boolean> {
   const res = await ollama().chat({
     model: FAITHFULNESS_MODEL,
     messages: [{ role: "user", content: `Document: ${context}\n\nClaim: ${claim}` }],
     stream: false,
+    keep_alive: keepAlive,
     options: { temperature: 0 },
   });
   return /^\s*yes/i.test(res.message.content);
@@ -160,10 +203,11 @@ const QWEN_JUDGE_SCHEMA = {
 
 const JUDGE_SYSTEM = `You are a strict, fair evaluator of retrieval-augmented answers. Judge ONLY against the provided context — never outside knowledge. Score answer_relevance (0..1, how directly the answer addresses the question) and citation_correctness (0..1, fraction of the answer's [n] citations whose passage actually supports the sentence; 1.0 if the answer correctly refuses). Set refused=true if the answer declined / said the context lacks the information. Return only the required JSON.`;
 
-async function relevanceJudge(
+export async function relevanceJudge(
   question: string,
   contextText: string,
   answer: string,
+  keepAlive?: string | number,
 ): Promise<{ answer_relevance: number; citation_correctness: number; refused: boolean; reasoning: string }> {
   const res = await ollama().chat({
     model: JUDGE_MODEL,
@@ -176,6 +220,7 @@ async function relevanceJudge(
     ],
     format: QWEN_JUDGE_SCHEMA,
     stream: false,
+    keep_alive: keepAlive,
     options: { temperature: 0 },
   });
   try {

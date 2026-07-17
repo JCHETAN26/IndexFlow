@@ -1,10 +1,11 @@
 /**
- * CLI for the generation (RAG) evaluation. Runs the real retriever + Claude + LLM-judge
- * over the labeled Q&A set and prints faithfulness / relevance / citation / refusal
- * numbers with a pass/fail gate. Exits non-zero if the gate fails.
+ * CLI for the generation (RAG) evaluation. Runs the real retriever + local generation +
+ * local LLM-judges over the labeled Q&A set and prints faithfulness / relevance / citation /
+ * refusal numbers with a pass/fail gate. Exits non-zero if the gate fails.
  *
- * Requires ANTHROPIC_API_KEY (it makes real API calls, so it is NOT wired into CI).
- * Run: pnpm --filter @indexflow/web eval:rag
+ * Needs a running Ollama with the three models pulled (see README) — no API keys. It is slow
+ * (models are loaded one at a time; see rag-harness.ts), so it is NOT wired into CI.
+ * Run: pnpm --filter @indexflow/web eval:rag   [EVAL_LIMIT=6 for a quick subset]
  */
 import { prisma } from "../lib/prisma";
 import { runRagEvaluation, type RagReport } from "./rag-harness";
@@ -27,9 +28,22 @@ function print(r: RagReport) {
   }
   console.log("─".repeat(56));
 
+  // Errored items score 0 and would otherwise be indistinguishable from a genuinely bad
+  // answer — surface them separately so an infra failure never reads as a quality result.
+  const errored = r.items.filter((i) => i.error);
+  if (errored.length) {
+    console.log(`errored items (scored 0, NOT a quality signal) — ${errored.length}/${r.items.length}:`);
+    for (const e of errored) {
+      console.log(`  • ${e.q}`);
+      console.log(`      ${e.judge.reasoning}`);
+    }
+    console.log("─".repeat(56));
+  }
+
   const misses = r.items.filter(
-    (i) => (i.answerable && (i.judge.faithfulness < 1 || i.judge.unsupported_claims.length > 0)) ||
-      (!i.answerable && !i.judge.refused),
+    (i) => !i.error &&
+      ((i.answerable && (i.judge.faithfulness < 1 || i.judge.unsupported_claims.length > 0)) ||
+        (!i.answerable && !i.judge.refused)),
   );
   if (misses.length) {
     console.log("flagged answers:");
