@@ -556,6 +556,8 @@ Defined in `apps/web/.env` (see `apps/web/.env.example`):
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string (defaults to the docker-compose DB on port 5440) |
+| `AUTH_SECRET` | Auth.js session secret (`npx auth secret` or `openssl rand -base64 33`) |
+| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | Google OAuth client (sign-in; Drive connector reuses the grant) |
 | `REDIS_URL` | Redis/BullMQ connection (default `redis://localhost:6380`) |
 | `ES_URL` | Elasticsearch endpoint (default `http://localhost:9200`) |
 | `ES_INDEX` | Keyword index name (default `indexflow_chunks`) |
@@ -630,7 +632,8 @@ exact KNN so eval numbers are deterministic and reproducible.
 - **`.md` / `.txt` / `.pdf`** — scanned PDFs (image-only, no text layer) won't extract;
   there is no OCR.
 - **Worker must be running** — uploads sit in `QUEUED` until `pnpm worker` picks them up.
-- **No authentication / multi-tenancy.**
+- **Sign-in required** — Google sign-in (Auth.js) gates the app. Data is not yet
+  partitioned per user/workspace; multi-tenant isolation lands with the connectors.
 - Upload size cap: 10 MB.
 
 ---
