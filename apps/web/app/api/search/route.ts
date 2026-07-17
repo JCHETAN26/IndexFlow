@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { blendHybrid, DEFAULT_HYBRID_WEIGHT } from "@/lib/hybrid";
 import { HL_START, HL_END } from "@/lib/es";
 import { fetchKeyword, fetchSemantic, toScored, type Candidate } from "@/lib/retrieve";
+import { auth } from "@/auth";
+import { viewerFrom, type Viewer } from "@/lib/acl";
 
 export const runtime = "nodejs";
 
@@ -52,10 +54,10 @@ function formatSemantic(cands: Candidate[]): Hit[] {
   }));
 }
 
-async function hybridSearch(q: string, fileType: string | null): Promise<Hit[]> {
+async function hybridSearch(q: string, fileType: string | null, viewer: Viewer): Promise<Hit[]> {
   const [keyword, semantic] = await Promise.all([
-    fetchKeyword(q, fileType),
-    fetchSemantic(q, fileType),
+    fetchKeyword(q, fileType, viewer),
+    fetchSemantic(q, fileType, viewer),
   ]);
 
   const blended = blendHybrid(toScored(keyword), toScored(semantic), DEFAULT_HYBRID_WEIGHT);
@@ -92,14 +94,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ query: "", mode, latencyMs: 0, results: [] });
   }
 
+  // Permission-aware: retrieval only ever returns chunks this viewer can see. An
+  // unauthenticated request resolves to a public-only viewer.
+  const session = await auth();
+  const viewer = await viewerFrom(session?.user?.id ?? null);
+
   const started = performance.now();
   let results: Hit[];
   if (mode === "hybrid") {
-    results = await hybridSearch(q, fileType);
+    results = await hybridSearch(q, fileType, viewer);
   } else if (mode === "semantic") {
-    results = formatSemantic(await fetchSemantic(q, fileType));
+    results = formatSemantic(await fetchSemantic(q, fileType, viewer));
   } else {
-    results = formatKeyword(await fetchKeyword(q, fileType));
+    results = formatKeyword(await fetchKeyword(q, fileType, viewer));
   }
   const latencyMs = Math.round(performance.now() - started);
 

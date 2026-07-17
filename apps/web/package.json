@@ -13,6 +13,7 @@
     "seed": "tsx --env-file=.env scripts/seed.ts",
     "eval": "tsx --env-file=.env eval/run.ts",
     "eval:rag": "tsx --env-file=.env eval/rag-run.ts",
+    "acl:leak": "tsx --env-file=.env eval/acl-leak.ts",
     "worker": "tsx --env-file=.env worker/index.ts",
     "postinstall": "prisma generate"
   },

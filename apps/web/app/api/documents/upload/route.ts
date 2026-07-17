@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { putObject, storageKeyFor } from "@/lib/storage";
 import { getIngestionQueue } from "@/lib/queue";
+import { auth } from "@/auth";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,11 @@ export async function POST(req: NextRequest) {
   const documentId = randomUUID();
   const storageKey = storageKeyFor(documentId, file.name);
 
+  // The uploader owns the document. It defaults to private (owner-only) — the ownerId is
+  // what makes it visible to them in permission-aware search; sharing is granted later.
+  const session = await auth();
+  const ownerId = session?.user?.id ?? null;
+
   // Store the original file, then create the document + a queued ingestion job.
   // Actual indexing (chunk → embed → store) happens asynchronously in the worker.
   await putObject(storageKey, bytes, file.type || "text/plain");
@@ -58,6 +64,7 @@ export async function POST(req: NextRequest) {
       fileType: ext,
       storageKey,
       status: "UPLOADED",
+      ownerId,
     },
     select: { id: true, title: true, fileName: true, fileType: true },
   });

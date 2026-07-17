@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { answerQuestion } from "@/lib/rag";
 import { REFUSAL_SENTENCE } from "@/lib/llm";
+import { auth } from "@/auth";
+import { viewerFrom } from "@/lib/acl";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -20,6 +22,11 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Missing query 'q'." }, { status: 400 });
   }
 
+  // Permission-aware: the answer is grounded only in documents this viewer can see, so a
+  // restricted document can never be retrieved, cited, or paraphrased into the answer.
+  const session = await auth();
+  const viewer = await viewerFrom(session?.user?.id ?? null);
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -38,7 +45,7 @@ export async function POST(req: NextRequest) {
       };
 
       try {
-        const { contexts, answer } = await answerQuestion(query);
+        const { contexts, answer } = await answerQuestion(query, viewer);
         send({
           type: "contexts",
           contexts: contexts.map((c) => ({

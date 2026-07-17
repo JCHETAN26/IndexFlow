@@ -5,6 +5,7 @@ import { extractText } from "./extract";
 import { chunkText } from "./chunk";
 import { embed, toVectorLiteral } from "./embed";
 import { ensureChunkIndex, indexChunks, deleteDocumentChunks, type EsChunk } from "./es";
+import { aclTokens } from "./acl";
 
 /**
  * Index a document end to end: download the original from object storage, extract text,
@@ -15,7 +16,14 @@ import { ensureChunkIndex, indexChunks, deleteDocumentChunks, type EsChunk } fro
 export async function ingestDocument(documentId: string): Promise<number> {
   const doc = await prisma.document.findUnique({
     where: { id: documentId },
-    select: { storageKey: true, fileType: true, title: true },
+    select: {
+      storageKey: true,
+      fileType: true,
+      title: true,
+      isPublic: true,
+      ownerId: true,
+      grants: { select: { userId: true, groupId: true } },
+    },
   });
   if (!doc?.storageKey) {
     throw new Error(`Document ${documentId} has no stored file to ingest.`);
@@ -61,6 +69,7 @@ export async function ingestDocument(documentId: string): Promise<number> {
   // immediately searchable (worker throughput isn't latency-critical).
   await ensureChunkIndex();
   await deleteDocumentChunks(documentId, undefined, true);
+  const acl = aclTokens(doc); // denormalise the document's ACL onto every chunk
   const esChunks: EsChunk[] = chunks.map((c, i) => ({
     chunkId: ids[i],
     documentId,
@@ -68,6 +77,7 @@ export async function ingestDocument(documentId: string): Promise<number> {
     title: doc.title,
     fileType: doc.fileType,
     content: c.content,
+    acl,
   }));
   await indexChunks(esChunks, undefined, "wait_for");
 

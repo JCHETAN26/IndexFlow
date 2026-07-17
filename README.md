@@ -28,6 +28,7 @@ query set, so every ranking decision is backed by numbers.
 - [The three search modes](#the-three-search-modes)
 - [Evaluation harness](#evaluation-harness)
 - [Grounded answers (Stage B)](#grounded-answers-stage-b)
+- [Permission-aware search](#permission-aware-search)
 - [Quick start](#quick-start)
 - [Scripts](#scripts)
 - [Environment variables](#environment-variables)
@@ -485,6 +486,56 @@ models in phases and unloads between them (only one resident at a time); a full 
 
 ---
 
+## Permission-aware search
+
+Enterprise search is only useful if it respects who is allowed to see what. IndexFlow's
+hybrid search **and** its RAG answers are permission-aware: a query only ever retrieves,
+ranks, or cites chunks the asking user is allowed to see — and a restricted document
+cannot leak into a generated answer, even indirectly.
+
+**The model** (`lib/acl.ts`, `prisma/schema.prisma`). A document is visible to a viewer if
+it is **public**, they **own** it, or a **grant** targets them **directly** or via a
+**group** they belong to (`Group` / `GroupMember` / `DocumentGrant`). New uploads default
+to private (owner-only) until shared. Identity comes from the Auth.js session (Stage A) via
+`auth()` in the search and answer routes; an unauthenticated request resolves to a
+public-only viewer.
+
+**Enforced on both retrieval legs, independently.** This is the part that mirrors how real
+enterprise search works:
+
+| Leg | How the ACL is enforced |
+|---|---|
+| **Keyword (Elasticsearch)** | Each chunk is indexed with a denormalised `acl` list of principal tokens (`public`, `user:<id>`, `group:<id>`). The query adds a `terms` filter on the viewer's principals, so restricted chunks are excluded **at the index**, before ranking. |
+| **Semantic (Postgres/pgvector)** | The same rule as a SQL predicate over the ownership + grant tables (`is_public OR owner_id = viewer OR EXISTS grant …`). |
+
+Both legs feed the shared retriever (`lib/retrieve.ts`), whose entry points **require** a
+`viewer` — so search and RAG (`lib/rag.ts`) inherit the filter automatically and can't
+accidentally retrieve unfiltered.
+
+**Proven, not asserted** (`eval/acl-leak.ts`). The leak test seeds users, a group, and
+documents with different ACLs, then drives the **real** retrieval + answer code (not a
+reimplementation) and checks that:
+
+- a viewer never retrieves a restricted document on the keyword leg, the semantic leg, or
+  the blended path — **even when that document is the single most relevant match** for the
+  query;
+- positive controls hold (the owner, and a granted group member, *do* retrieve it — the
+  filter isn't just hiding everything);
+- a RAG answer for a restricted query never contains the restricted secret. In practice the
+  generator **refuses** ("I don't have enough information…"), because the one relevant
+  document was filtered out before generation ever ran — the leak is prevented at retrieval,
+  so the LLM can't even paraphrase what it never received.
+
+```bash
+pnpm --filter @indexflow/web acl:leak   # seeds ACL fixtures, runs the checks, tears down
+```
+
+Because the ACL is denormalised into Elasticsearch, changing a document's sharing re-syncs
+its chunks' `acl` in place (`syncDocumentAcl`), and `es:backfill` repopulates it when
+rebuilding the index from Postgres (the source of truth).
+
+---
+
 ## Quick start
 
 **Prerequisites:** Node 22+, pnpm 9+, Docker.
@@ -542,6 +593,7 @@ pnpm --filter @indexflow/web es:backfill      # all chunks → Elasticsearch key
 | Script | Action |
 |---|---|
 | `pnpm --filter @indexflow/web eval` | Run the evaluation + quality gate |
+| `pnpm --filter @indexflow/web acl:leak` | Permission-aware search leak test (seeds ACL fixtures, checks no cross-user leak, tears down) |
 | `pnpm --filter @indexflow/web embed:backfill` | Embed chunks with a NULL embedding |
 | `pnpm --filter @indexflow/web es:backfill` | (Re)index all chunks into Elasticsearch |
 | `pnpm --filter @indexflow/web worker` | Run the BullMQ ingestion worker |
@@ -632,8 +684,11 @@ exact KNN so eval numbers are deterministic and reproducible.
 - **`.md` / `.txt` / `.pdf`** — scanned PDFs (image-only, no text layer) won't extract;
   there is no OCR.
 - **Worker must be running** — uploads sit in `QUEUED` until `pnpm worker` picks them up.
-- **Sign-in required** — Google sign-in (Auth.js) gates the app. Data is not yet
-  partitioned per user/workspace; multi-tenant isolation lands with the connectors.
+- **Sign-in required** — Google sign-in (Auth.js) gates the app.
+- **Permission scope** — hybrid **search and RAG answers are permission-aware** (see
+  [Permission-aware search](#permission-aware-search)), but the management surfaces
+  (`/documents` list, delete) and a sharing UI are not yet permission-scoped; grants are
+  set in the database today. Scoping those is the next step.
 - Upload size cap: 10 MB.
 
 ---

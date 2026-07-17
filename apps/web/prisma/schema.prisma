@@ -26,6 +26,11 @@ model User {
   accounts Account[]
   sessions Session[]
 
+  // ── Permissions (Stage: permission-aware search) ──
+  ownedDocuments   Document[]      @relation("DocumentOwner")
+  groupMemberships GroupMember[]
+  documentGrants   DocumentGrant[]
+
   @@map("users")
 }
 
@@ -95,10 +100,68 @@ model Document {
   uploadedAt DateTime       @default(now())
   indexedAt  DateTime?
 
+  // ── Permissions ──
+  // A document is visible to a viewer if it is public, they own it, or a grant
+  // targets them (directly, or a group they belong to). `isPublic` defaults to
+  // false (restrictive): a new upload is private to its owner until shared. The
+  // ACL is denormalised into each Elasticsearch chunk (an `acl` principal list)
+  // so keyword search filters at the index; Postgres enforces the same rule via
+  // joins on the tables below (see lib/acl.ts, lib/retrieve.ts).
+  ownerId  String?  @map("owner_id") @db.Uuid
+  isPublic Boolean  @default(false) @map("is_public")
+
+  owner  User?           @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  grants DocumentGrant[]
+
   chunks DocumentChunk[]
   jobs   IngestionJob[]
 
+  @@index([ownerId])
   @@map("documents")
+}
+
+// A user or a group to which visibility of a set of resources is granted.
+model Group {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  members GroupMember[]
+  grants  DocumentGrant[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  userId  String @map("user_id") @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([userId, groupId])
+  @@index([groupId])
+  @@map("group_members")
+}
+
+// One access grant on a document to exactly one principal — either a user
+// (`userId`) or a group (`groupId`). Ownership and `isPublic` are handled on the
+// Document itself; this table holds explicit shares beyond those.
+model DocumentGrant {
+  id         String  @id @default(uuid()) @db.Uuid
+  documentId String  @map("document_id") @db.Uuid
+  userId     String? @map("user_id") @db.Uuid
+  groupId    String? @map("group_id") @db.Uuid
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group    Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, userId, groupId])
+  @@index([documentId])
+  @@index([userId])
+  @@index([groupId])
+  @@map("document_grants")
 }
 
 model IngestionJob {
