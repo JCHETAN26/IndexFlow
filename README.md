@@ -145,7 +145,7 @@ graph TB
         AUTH["Auth.js session → viewer + principals"]
         SEARCH["/api/search"]
         ANSWER["/api/answer (RAG, streaming)"]
-        DOCS["/api/documents (+ [id]/sharing)"]
+        DOCS["/api/documents (+ sharing)"]
         UP["/api/documents/upload"]
         EV["/api/eval · /api/eval/rag"]
     end
@@ -161,13 +161,15 @@ graph TB
     U --> UI
     UI --> SEARCH & ANSWER & DOCS & UP & EV
     SEARCH & ANSWER & DOCS --> AUTH
-    UP -->|store + enqueue| MINIO
+    UP -->|"store + enqueue"| MINIO
     UP --> REDIS
     REDIS --> WORKER
     WORKER --> MINIO & PG & ES
-    SEARCH -->|keyword + semantic, ACL-filtered| ES & PG
-    ANSWER -->|retrieve, ACL-filtered| ES & PG
-    ANSWER -->|generate + judge| OLLAMA
+    SEARCH -->|"keyword + semantic, ACL-filtered"| ES
+    SEARCH --> PG
+    ANSWER -->|"retrieve, ACL-filtered"| ES
+    ANSWER --> PG
+    ANSWER -->|"generate + judge"| OLLAMA
     EV --> OLLAMA
 ```
 
@@ -176,7 +178,7 @@ graph TB
 ```mermaid
 flowchart LR
     A["Browser /upload"] -->|multipart file| B["POST /api/documents/upload"]
-    B --> C{"validate type & size"}
+    B --> C{"validate type and size"}
     C -->|"ok"| M["putObject → MinIO<br/>(owner recorded, private by default)"]
     M --> J["create document + ingestion_job<br/>enqueue on Redis/BullMQ"]
     J -.->|202 Accepted| A
@@ -197,7 +199,7 @@ flowchart LR
     SM --> BL
     BL --> TOP["top-k visible chunks"]
     TOP --> RES["ranked, highlighted results"]
-    TOP --> GEN["llama3.2 · grounding prompt<br/>cite [n] · refuse if unsupported"]
+    TOP --> GEN["llama3.2 · grounding prompt<br/>cite each claim · refuse if unsupported"]
     GEN --> ANS["streamed answer + citations"]
 ```
 
