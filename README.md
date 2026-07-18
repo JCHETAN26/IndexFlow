@@ -530,8 +530,20 @@ reimplementation) and checks that:
 pnpm --filter @indexflow/web acl:leak   # seeds ACL fixtures, runs the checks, tears down
 ```
 
-Because the ACL is denormalised into Elasticsearch, changing a document's sharing re-syncs
-its chunks' `acl` in place (`syncDocumentAcl`), and `es:backfill` repopulates it when
+**Managing access** (`/documents`, `lib/sharing.ts`). The documents page is itself
+permission-scoped: you see only documents you own, that are shared with you, or that are
+public, and you can only delete your own. Each owned document has a **sharing panel** —
+toggle public, grant access to a user (by email) or a group (by name), and revoke — and an
+uploaded file is **private to its uploader** until shared. Every sharing change re-syncs the
+document's ACL into Elasticsearch in place (`syncDocumentAcl`), so it takes effect on both
+retrieval legs immediately. The `acl:sharing` check drives the real sharing mutations and
+asserts the visibility flips (private → grant → visible → revoke → hidden → public):
+
+```bash
+pnpm --filter @indexflow/web acl:sharing   # sharing lifecycle → retrieval-visibility check
+```
+
+Because the ACL is denormalised into Elasticsearch, `es:backfill` also repopulates it when
 rebuilding the index from Postgres (the source of truth).
 
 ---
@@ -594,6 +606,7 @@ pnpm --filter @indexflow/web es:backfill      # all chunks → Elasticsearch key
 |---|---|
 | `pnpm --filter @indexflow/web eval` | Run the evaluation + quality gate |
 | `pnpm --filter @indexflow/web acl:leak` | Permission-aware search leak test (seeds ACL fixtures, checks no cross-user leak, tears down) |
+| `pnpm --filter @indexflow/web acl:sharing` | Sharing lifecycle check (grant/revoke/public → retrieval-visibility flips) |
 | `pnpm --filter @indexflow/web embed:backfill` | Embed chunks with a NULL embedding |
 | `pnpm --filter @indexflow/web es:backfill` | (Re)index all chunks into Elasticsearch |
 | `pnpm --filter @indexflow/web worker` | Run the BullMQ ingestion worker |
@@ -685,10 +698,9 @@ exact KNN so eval numbers are deterministic and reproducible.
   there is no OCR.
 - **Worker must be running** — uploads sit in `QUEUED` until `pnpm worker` picks them up.
 - **Sign-in required** — Google sign-in (Auth.js) gates the app.
-- **Permission scope** — hybrid **search and RAG answers are permission-aware** (see
-  [Permission-aware search](#permission-aware-search)), but the management surfaces
-  (`/documents` list, delete) and a sharing UI are not yet permission-scoped; grants are
-  set in the database today. Scoping those is the next step.
+- **Groups are seeded, not self-serve** — you can grant a document to an existing group,
+  but creating groups and managing membership is done in the database (no admin UI yet).
+  User and public sharing are fully self-serve on `/documents`.
 - Upload size cap: 10 MB.
 
 ---

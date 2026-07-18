@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { updateDocumentAcl } from "@/lib/es";
 
@@ -42,6 +43,28 @@ export async function viewerFrom(userId: string | null): Promise<Viewer> {
     for (const m of memberships) principals.push(groupToken(m.groupId));
   }
   return { userId, principals };
+}
+
+/**
+ * Prisma `where` fragment selecting the documents a viewer may see — the same rule the
+ * retrieval SQL predicate encodes (lib/retrieve `visibleToViewer`), expressed for the
+ * Prisma query builder so the management/list surfaces stay consistent with search. An
+ * anonymous viewer (null userId) sees only public documents.
+ */
+export function documentVisibilityWhere(viewer: Viewer): Prisma.DocumentWhereInput {
+  const uid = viewer.userId;
+  return {
+    OR: [
+      { isPublic: true },
+      ...(uid
+        ? [
+            { ownerId: uid },
+            { grants: { some: { userId: uid } } },
+            { grants: { some: { group: { members: { some: { userId: uid } } } } } },
+          ]
+        : []),
+    ],
+  };
 }
 
 /** The minimal document shape needed to compute its ACL tokens for indexing. */
