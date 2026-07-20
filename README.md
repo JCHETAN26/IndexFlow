@@ -393,6 +393,43 @@ exact                     93%       93%       100%
 paraphrase                83%       92%        92%
 ```
 
+### Scale & latency benchmark
+
+`pnpm --filter @indexflow/web bench:latency` generates a **synthetic** corpus at increasing
+scale (random 384-dim vectors in an isolated `bench_chunks` table with a real pgvector HNSW
+index; real text in an ephemeral Elasticsearch index — the production index types and query
+shapes, isolated so it never touches real data) and measures retrieval **latency** at each
+scale. It measures latency, not quality (vectors are synthetic; quality is the eval above).
+Full results: [`apps/web/bench/RESULTS.md`](apps/web/bench/RESULTS.md).
+
+**Query latency p50 / p95 (ms), 200 queries/scale, local Docker on an 8 GB machine:**
+
+| Corpus | keyword | semantic | hybrid |
+|---:|---|---|---|
+| 1,000 | 12.9 / 71 | 4.9 / 19 | 13.3 / 80 |
+| 10,000 | 9.0 / 25 | 3.1 / 17 | 9.3 / 31 |
+| 50,000 | 8.3 / 17 | 2.2 / 5 | 8.4 / 16 |
+| 100,000 | 13.6 / 63 | 3.2 / 20 | 13.6 / 61 |
+
+**What it shows (and where the bottleneck is):**
+- **Latency is index-bound, not scan-bound.** Across a 100× jump in corpus size (1k → 100k),
+  p50 stays flat — semantic ~2–5 ms, keyword ~8–14 ms. Both the pgvector HNSW index and the
+  Elasticsearch inverted index are sublinear in corpus size.
+- **The semantic leg is the fast one** (in-process DB, HNSW ~2–5 ms p50). **The keyword leg
+  (Elasticsearch over HTTP) dominates hybrid latency** — hybrid runs both legs in parallel, so
+  it tracks the slower ES leg plus a negligible in-memory blend. The bottleneck is the network
+  hop to Elasticsearch, not the vector math.
+- **Tail latency is host-noise, not scale.** p95/p99 are jumpy (worst at 1k and 100k) because
+  everything shares one 8 GB box with a 512 MB ES heap — that's contention, not the algorithm.
+  On dedicated hardware the tails would tighten; the p50 trend is the real signal.
+- **The real cost of scale is index build, not query.** HNSW build time grows roughly linearly
+  (0.1 s at 1k → 24 s at 100k), so scaling *ingestion* is the thing to engineer next
+  (background/partial index builds), not query latency.
+
+> Caveat: these are single-machine numbers with synthetic data and shared resources — a
+> directional latency profile, not a production SLA. The value is the shape (flat with scale,
+> ES-hop-bound), not the absolute milliseconds.
+
 ---
 
 ## Repository layout
