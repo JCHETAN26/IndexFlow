@@ -1,0 +1,228 @@
+project_name: "IndexFlow"
+
+skills:
+  - skill: "TypeScript (strict)"
+    category: "language"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.95
+    evidence:
+      - path: "apps/web"
+        reason: "~6,900 LOC strict TS/TSX across app, lib, worker, eval."
+    notes: ""
+
+  - skill: "Next.js 15 (App Router)"
+    category: "framework"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/app"
+        reason: "6 pages + 12 API route handlers, streaming response, middleware."
+    notes: ""
+
+  - skill: "React 19"
+    category: "frontend"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/app/documents/page.tsx"
+        reason: "Client components with state, sharing panel, streaming answer UI."
+    notes: ""
+
+  - skill: "Retrieval-Augmented Generation (RAG)"
+    category: "ml_ai"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/rag.ts"
+        reason: "Retrieval-to-grounded-generation orchestration with refusal."
+      - path: "apps/web/lib/llm.ts"
+        reason: "Grounding prompt, streaming, citation handling."
+    notes: ""
+
+  - skill: "Hybrid search (BM25 + vector fusion)"
+    category: "ml_ai"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/hybrid.ts"
+        reason: "Normalize + weighted-sum score fusion."
+      - path: "apps/web/eval/harness.ts"
+        reason: "Weight sweep selecting the blend."
+    notes: ""
+
+  - skill: "Vector search / embeddings (pgvector, MiniLM)"
+    category: "ml_ai"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/embed.ts"
+        reason: "Transformers.js all-MiniLM-L6-v2, 384-dim, normalized."
+      - path: "apps/web/prisma/schema.prisma"
+        reason: "vector(384) column + HNSW index (migrations)."
+    notes: ""
+
+  - skill: "LLM-as-judge / model evaluation"
+    category: "ml_ai"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.8
+    evidence:
+      - path: "apps/web/eval/rag-harness.ts"
+        reason: "Per-claim faithfulness (minicheck) + relevance/citation (qwen2.5); generator != judges."
+    notes: "Single local run; frame as local eval."
+
+  - skill: "Elasticsearch (BM25, highlighting, terms filters)"
+    category: "database"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/es.ts"
+        reason: "Index mapping, bulk indexing, multi_match + highlight + acl terms filter, update_by_query."
+    notes: ""
+
+  - skill: "PostgreSQL + pgvector"
+    category: "database"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/retrieve.ts"
+        reason: "Raw SQL KNN with cosine + ACL predicate."
+      - path: "apps/web/prisma/migrations"
+        reason: "vector extension, HNSW index, ACL tables."
+    notes: ""
+
+  - skill: "Prisma ORM (schema + migrations)"
+    category: "database"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/prisma/schema.prisma"
+        reason: "10+ models; Unsupported(vector) tracked column."
+      - path: "apps/web/prisma/migrations"
+        reason: "7 forward migrations incl. a data-backfill step."
+    notes: ""
+
+  - skill: "Redis + BullMQ (async jobs, retry/backoff)"
+    category: "backend"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/queue.ts"
+        reason: "Queue + Redis connection."
+      - path: "apps/web/worker/index.ts"
+        reason: "Worker consuming jobs, status transitions."
+      - path: "apps/web/app/api/documents/upload/route.ts"
+        reason: "attempts:3 + exponential backoff."
+    notes: ""
+
+  - skill: "Authentication / authorization (Auth.js, ACL model)"
+    category: "backend"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/auth.ts"
+        reason: "NextAuth v5 + Prisma adapter + Google."
+      - path: "apps/web/lib/acl.ts"
+        reason: "Principal model + visibility rule enforced on both retrieval legs."
+      - path: "apps/web/eval/acl-leak.ts"
+        reason: "Leak test proving enforcement."
+    notes: "Authorization/ACL is the stronger half; OAuth is standard-issue."
+
+  - skill: "Object storage (MinIO / S3, AWS SDK v3)"
+    category: "backend"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/lib/storage.ts"
+        reason: "S3 client (path-style) put/get/delete + lazy bucket create."
+    notes: ""
+
+  - skill: "Docker Compose (multi-service infra)"
+    category: "devops"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "infra/docker-compose.yml"
+        reason: "Postgres/pgvector, Redis 7, Elasticsearch 8, MinIO with volumes + healthchecks."
+    notes: ""
+
+  - skill: "CI (GitHub Actions with service containers + quality gate)"
+    category: "devops"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: ".github/workflows/ci.yml"
+        reason: "build (type-check) + eval (Postgres + Elasticsearch services, retrieval gate)."
+    notes: ""
+
+  - skill: "Evaluation harness design (deterministic, isolated)"
+    category: "testing"
+    depth: "advanced"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/eval/harness.ts"
+        reason: "Ephemeral ES index + rolled-back PG tx + exact KNN for determinism."
+    notes: "Substitutes for a unit-test suite."
+
+  - skill: "Streaming APIs (NDJSON / ReadableStream)"
+    category: "backend"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/app/api/answer/route.ts"
+        reason: "NDJSON streaming with disconnect tolerance + safe error surfacing."
+    notes: ""
+
+  - skill: "PDF/text extraction + chunking"
+    category: "data_engineering"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/lib/extract.ts"
+        reason: "unpdf-based extraction with sanitization."
+      - path: "apps/web/lib/chunk.ts"
+        reason: "Paragraph packing, ~180-word chunks, 30-word overlap."
+    notes: ""
+
+  - skill: "Tailwind CSS v4"
+    category: "frontend"
+    depth: "intermediate"
+    resume_safe: true
+    confidence: 0.8
+    evidence:
+      - path: "apps/web/app/documents/page.tsx"
+        reason: "Utility-class styling throughout the UI."
+    notes: ""
+
+missing_or_unverified_skills:
+  - skill: "Kubernetes / container orchestration"
+    reason: "Not present; only Docker Compose for local infra."
+  - skill: "Cloud platforms (AWS/GCP/Azure) beyond the S3-compatible client"
+    reason: "No cloud deploy, IaC (Terraform/Pulumi), or managed services in the repo."
+  - skill: "Data warehouse / dbt / Airflow / Kafka / Spark"
+    reason: "No batch/stream data-engineering stack; ingestion is app-level BullMQ."
+  - skill: "Model training / fine-tuning / MLOps"
+    reason: "Only pretrained embeddings + off-the-shelf LLMs; no training or model registry."
+  - skill: "Unit/integration testing frameworks (Jest/Vitest/Playwright)"
+    reason: "None in dependencies; correctness via eval harnesses + ACL scripts."
+  - skill: "Cross-encoder reranking / query rewriting (HyDE)"
+    reason: "Listed as future work; not implemented."
+  - skill: "Observability (metrics/tracing/logging stack)"
+    reason: "No Prometheus/Grafana/OpenTelemetry; only console logging."

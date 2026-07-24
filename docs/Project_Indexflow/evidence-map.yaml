@@ -1,0 +1,204 @@
+project_name: "IndexFlow"
+repo_summary: "Permission-aware hybrid (keyword + vector) workspace search with a grounded, citation-backed RAG layer, built on Next.js 15, Postgres/pgvector, Elasticsearch, Redis/BullMQ, MinIO, Auth.js, and local models (Transformers.js + Ollama). Retrieval quality, hallucination rate, and access control are each verified by a runnable evaluation; retrieval is gated in CI. Local/portfolio project, not deployed."
+
+claims:
+  - claim: "Built a hybrid retrieval engine that fuses Elasticsearch BM25 keyword results with pgvector semantic results using a min-max-normalized weighted blend."
+    claim_type: "architecture"
+    resume_safe: true
+    confidence: 0.95
+    evidence:
+      - path: "apps/web/lib/hybrid.ts"
+        reason: "Pure blend function: normalize + weighted sum + drop-zero."
+      - path: "apps/web/lib/retrieve.ts"
+        reason: "Fetches keyword + semantic candidates and blends them via blendHybrid."
+      - path: "apps/web/app/api/search/route.ts"
+        reason: "Search route exposes keyword/semantic/hybrid modes."
+    notes: "Chunk ids shared across both stores correlate hits."
+
+  - claim: "Chose the hybrid blend weight (0.4) by an offline weight sweep rather than by intuition, and gate retrieval quality in CI."
+    claim_type: "metric"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/eval/harness.ts"
+        reason: "Computes recall@k/MRR per strategy and sweeps keyword weight 0.0–1.0."
+      - path: "apps/web/lib/hybrid.ts"
+        reason: "DEFAULT_HYBRID_WEIGHT = 0.4."
+      - path: ".github/workflows/ci.yml"
+        reason: "eval job runs pnpm eval against real Postgres + Elasticsearch containers."
+    notes: "Hybrid MRR 0.98 vs 0.96 semantic / 0.92 keyword on a 17-doc/27-query labeled set."
+
+  - claim: "Implemented a grounded RAG layer with a local LLM that answers only from retrieved passages, cites each claim, and refuses when context is insufficient; streamed to the UI."
+    claim_type: "feature"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/rag.ts"
+        reason: "Wires ACL-filtered retrieval to the generator; returns null when nothing retrieved."
+      - path: "apps/web/lib/llm.ts"
+        reason: "Grounding prompt, refusal handling, streaming generation over Ollama."
+      - path: "apps/web/app/api/answer/route.ts"
+        reason: "NDJSON streaming answer endpoint with citation metadata."
+    notes: "Generator llama3.2:3b; provider-neutral seam."
+
+  - claim: "Built an LLM-as-judge hallucination evaluation measuring per-claim faithfulness, answer relevance, citation correctness, and refusal correctness, with generator and judges as different models."
+    claim_type: "ml"
+    resume_safe: true
+    confidence: 0.8
+    evidence:
+      - path: "apps/web/eval/rag-harness.ts"
+        reason: "Runs real retriever + generator, scores with minicheck + qwen2.5."
+      - path: "apps/web/eval/answers.json"
+        reason: "32-question labeled set (answerable + unanswerable)."
+      - path: "apps/web/eval/rag-run.ts"
+        reason: "CLI report + quality gate; surfaces infra-errored items separately."
+    notes: "Faithfulness 98% / refusal 92% on a single local run; frame as local eval."
+
+  - claim: "Enforced per-document access control on both retrieval legs independently: a denormalized ACL principal list with an Elasticsearch terms filter, and an equivalent Postgres SQL visibility predicate."
+    claim_type: "architecture"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/acl.ts"
+        reason: "Principal model, viewerFrom, aclTokens, documentVisibilityWhere, syncDocumentAcl."
+      - path: "apps/web/lib/retrieve.ts"
+        reason: "visibleToViewer SQL predicate; every entry point requires a Viewer."
+      - path: "apps/web/lib/es.ts"
+        reason: "acl keyword field + terms filter in keywordSearch."
+    notes: "Both legs encode the same rule; shared retriever prevents unfiltered calls."
+
+  - claim: "Proved permission-aware RAG does not leak restricted content with a leak test that drives the real retrieval + answer code and asserts a restricted document is never retrieved or cited, even when it is the single most relevant match."
+    claim_type: "testing"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/eval/acl-leak.ts"
+        reason: "Seeds users/group/docs, checks keyword+semantic+blended legs, positive controls, and generated-answer content; 9/9 pass."
+      - path: "apps/web/eval/sharing-check.ts"
+        reason: "Grant/revoke/public flips retrieval visibility on both legs; 8/8 pass."
+    notes: "Deterministic; tears down its fixtures."
+
+  - claim: "Built an asynchronous ingestion pipeline on a BullMQ/Redis worker (extract to chunk to embed to dual-write Postgres + Elasticsearch) with retry + exponential backoff and idempotent re-index."
+    claim_type: "infra"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/ingest.ts"
+        reason: "Shared indexer with idempotent chunk replacement + dual-store write incl. acl."
+      - path: "apps/web/worker/index.ts"
+        reason: "BullMQ worker consuming the queue and updating job status."
+      - path: "apps/web/app/api/documents/upload/route.ts"
+        reason: "Enqueues with attempts:3 + exponential backoff; returns 202."
+    notes: "Redis-backed; MinIO stores originals."
+
+  - claim: "Modeled documents and permissions in Postgres with Prisma (owner, public flag, groups, group membership, document grants) across 7 migrations, using pgvector for embeddings."
+    claim_type: "data"
+    resume_safe: true
+    confidence: 0.95
+    evidence:
+      - path: "apps/web/prisma/schema.prisma"
+        reason: "Document (ownerId/isPublic), Group, GroupMember, DocumentGrant, DocumentChunk (vector(384))."
+      - path: "apps/web/prisma/migrations"
+        reason: "7 migrations: init, FTS GIN, embeddings+HNSW, storage key, ingestion jobs, Auth.js identity, permission ACL."
+    notes: "Embedding column is Unsupported(vector) with raw-SQL reads/writes."
+
+  - claim: "Implemented Google sign-in with Auth.js (NextAuth v5) and a Prisma adapter; identity resolves the viewer used for permission filtering."
+    claim_type: "feature"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/auth.ts"
+        reason: "NextAuth instance + Prisma adapter, JWT session strategy."
+      - path: "apps/web/auth.config.ts"
+        reason: "Google provider + session callback exposing user id."
+      - path: "apps/web/middleware.ts"
+        reason: "Edge middleware protecting pages."
+    notes: "OAuth client credentials are env-driven (not committed)."
+
+  - claim: "Generated 384-dim embeddings fully in-process with Transformers.js (all-MiniLM-L6-v2), no external API key, so the pipeline and eval run offline including in CI."
+    claim_type: "ml"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/lib/embed.ts"
+        reason: "Transformers.js pipeline, mean-pool + L2-normalize, cached singleton."
+      - path: ".github/workflows/ci.yml"
+        reason: "eval runs offline with local embeddings."
+    notes: "Cosine reduces to dot product due to normalization."
+
+  - claim: "Shipped a full-stack Next.js 15 (App Router) application: search + streaming answer UI, permission-scoped documents list with a self-serve sharing panel, live eval page, upload, and job-status pages."
+    claim_type: "feature"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "apps/web/app/page.tsx"
+        reason: "Search + grounded answer UI."
+      - path: "apps/web/app/documents/page.tsx"
+        reason: "Scoped list + expandable sharing panel."
+      - path: "apps/web/app/api"
+        reason: "12 API route handlers."
+      - path: "docs/screenshots"
+        reason: "Three real UI screenshots captured from the running app."
+    notes: "~6,900 LOC TS/TSX."
+
+  - claim: "Provisioned local infrastructure as code with Docker Compose (Postgres/pgvector, Redis 7, Elasticsearch 8, MinIO) and CI with service containers."
+    claim_type: "deployment"
+    resume_safe: true
+    confidence: 0.9
+    evidence:
+      - path: "infra/docker-compose.yml"
+        reason: "Four services with pinned images, ports, volumes, healthchecks."
+      - path: ".github/workflows/ci.yml"
+        reason: "eval job spins up Postgres + Elasticsearch service containers."
+    notes: "Local only; no cloud deploy."
+
+  - claim: "Prevented stored-content XSS in search highlighting by escaping HTML then swapping Elasticsearch sentinel tokens for mark tags."
+    claim_type: "feature"
+    resume_safe: true
+    confidence: 0.85
+    evidence:
+      - path: "apps/web/app/api/search/route.ts"
+        reason: "escapeHtml then sentinel-to-mark swap."
+      - path: "apps/web/lib/es.ts"
+        reason: "HL_START/HL_END sentinel highlight tokens."
+    notes: "Security-minded detail."
+
+safe_claims:
+  - "Hybrid keyword + vector retrieval with a measured blend weight (MRR 0.98 on a labeled 27-query set)."
+  - "Grounded RAG with citations and a refusal guardrail, measured by an LLM-as-judge hallucination eval (98% faithfulness / 92% refusal on a 32-question local eval)."
+  - "Permission-aware search + RAG enforced on both retrieval legs, proven by a 9/9 leak test."
+  - "Async ingestion on a BullMQ/Redis worker with retry/backoff and idempotent dual-store indexing."
+  - "Postgres/pgvector + Elasticsearch dual-store with Prisma schema + 7 migrations."
+  - "Retrieval quality gated in CI on real Postgres + Elasticsearch containers."
+  - "Full-stack Next.js 15 app with Auth.js Google sign-in and a self-serve sharing UI."
+
+risky_claims:
+  - claim: "Production-grade / enterprise-scale search platform."
+    reason: "Not deployed; no users, scale, or uptime; small fixture corpora."
+    safer_alternative: "Production-minded local implementation of enterprise-search patterns (permission-aware retrieval, dual-store, CI-gated eval)."
+  - claim: "Processes/searches large document corpora with high throughput."
+    reason: "No load testing; eval corpus is 17 docs, ~8 seeded."
+    safer_alternative: "Indexes and searches a labeled evaluation corpus; scale benchmarking is future work."
+  - claim: "Low-latency (sub-second) search at scale."
+    reason: "Only a single-run UI latency readout on an 8 GB dev box; no percentiles."
+    safer_alternative: "Search returns in ~1 s locally on the fixture corpus (anecdotal, not benchmarked)."
+  - claim: "Fine-tuned / trained models."
+    reason: "Uses pretrained MiniLM + off-the-shelf Ollama models; no training code."
+    safer_alternative: "Used pretrained embeddings + local LLMs and built an evaluation harness around them."
+  - claim: "99.x% faithfulness / near-zero hallucination."
+    reason: "Single local run, small LLM judges, author-designed fixtures."
+    safer_alternative: "98% faithfulness on one LLM-judged run of a 32-question eval (local models); directional, not a benchmark."
+
+missing_evidence:
+  - claim_or_area: "Scale + latency benchmarks (p50/p95/p99, docs/sec)"
+    why_it_matters: "Turns 'it works' into 'I understand systems'; recruiters and interviewers probe this."
+    suggested_fix: "Add a synthetic-corpus benchmark script (10k/50k/100k docs) that emits ingestion throughput + latency percentiles; commit the output."
+  - claim_or_area: "Unit/integration test suite"
+    why_it_matters: "No Jest/Vitest/Playwright; correctness rests on evals only."
+    suggested_fix: "Add Vitest for lib/hybrid.ts, lib/acl.ts, lib/chunk.ts and a smoke test for the search/answer routes."
+  - claim_or_area: "RAG metric stability"
+    why_it_matters: "One local LLM-judged run is not a firm number."
+    suggested_fix: "Run eval:rag N times; report mean ± std; add a larger/hosted judge config."
+  - claim_or_area: "Live deployment + observability"
+    why_it_matters: "No public URL, no metrics dashboard, no eval-over-time."
+    suggested_fix: "Deploy to a managed stack; add structured logging + a metrics page."

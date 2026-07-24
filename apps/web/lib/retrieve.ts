@@ -4,6 +4,10 @@ import { embedOne, toVectorLiteral } from "@/lib/embed";
 import { blendHybrid, DEFAULT_HYBRID_WEIGHT, type Scored } from "@/lib/hybrid";
 import { keywordSearch } from "@/lib/es";
 import type { Viewer } from "@/lib/acl";
+import { trace } from "@opentelemetry/api";
+import { rerank } from "./rerank";
+
+const tracer = trace.getTracer("indexflow-web");
 
 /**
  * Shared retrieval used by both the search route (app/api/search) and the RAG
@@ -57,15 +61,23 @@ export async function fetchKeyword(
   viewer: Viewer,
   limit: number = CANDIDATE_LIMIT,
 ): Promise<Candidate[]> {
-  const hits = await keywordSearch(q, fileType, limit, undefined, viewer.principals);
-  return hits.map((h) => ({
-    chunkId: h.chunkId,
-    documentId: h.documentId,
-    title: h.title,
-    fileType: h.fileType,
-    snippet: h.snippet,
-    score: h.score,
-  }));
+  return tracer.startActiveSpan("fetchKeyword", async (span) => {
+    try {
+      const hits = await keywordSearch(q, fileType, limit, undefined, viewer.principals);
+      const candidates = hits.map((h) => ({
+        chunkId: h.chunkId,
+        documentId: h.documentId,
+        title: h.title,
+        fileType: h.fileType,
+        snippet: h.snippet,
+        score: h.score,
+      }));
+      span.setAttribute("hits", candidates.length);
+      return candidates;
+    } finally {
+      span.end();
+    }
+  });
 }
 
 export async function fetchSemantic(
@@ -74,23 +86,31 @@ export async function fetchSemantic(
   viewer: Viewer,
   limit: number = CANDIDATE_LIMIT,
 ): Promise<Candidate[]> {
-  const vec = toVectorLiteral(await embedOne(q));
-  return prisma.$queryRaw<Candidate[]>`
-    SELECT
-      dc.id::text                          AS "chunkId",
-      dc."documentId"::text                AS "documentId",
-      d.title                              AS title,
-      d."fileType"                         AS "fileType",
-      left(dc.content, 320)                AS snippet,
-      1 - (dc.embedding <=> ${vec}::vector) AS score
-    FROM document_chunks dc
-    JOIN documents d ON d.id = dc."documentId"
-    WHERE dc.embedding IS NOT NULL
-      AND (${fileType}::text IS NULL OR d."fileType" = ${fileType})
-      AND ${visibleToViewer(viewer)}
-    ORDER BY dc.embedding <=> ${vec}::vector
-    LIMIT ${limit}
-  `;
+  return tracer.startActiveSpan("fetchSemantic", async (span) => {
+    try {
+      const vec = toVectorLiteral(await embedOne(q));
+      const candidates = await prisma.$queryRaw<Candidate[]>`
+        SELECT
+          dc.id::text                          AS "chunkId",
+          dc."documentId"::text                AS "documentId",
+          d.title                              AS title,
+          d."fileType"                         AS "fileType",
+          left(dc.content, 320)                AS snippet,
+          1 - (dc.embedding <=> ${vec}::vector) AS score
+        FROM document_chunks dc
+        JOIN documents d ON d.id = dc."documentId"
+        WHERE dc.embedding IS NOT NULL
+          AND (${fileType}::text IS NULL OR d."fileType" = ${fileType})
+          AND ${visibleToViewer(viewer)}
+        ORDER BY dc.embedding <=> ${vec}::vector
+        LIMIT ${limit}
+      `;
+      span.setAttribute("hits", candidates.length);
+      return candidates;
+    } finally {
+      span.end();
+    }
+  });
 }
 
 export const toScored = (c: Candidate[]): Scored[] =>
@@ -120,33 +140,66 @@ export async function retrieveContexts(
   k: number,
   viewer: Viewer,
   fileType: string | null = null,
+  useReranker: boolean = false,
 ): Promise<RetrievedContext[]> {
-  const [keyword, semantic] = await Promise.all([
-    fetchKeyword(query, fileType, viewer),
-    fetchSemantic(query, fileType, viewer),
-  ]);
-  const blended = blendHybrid(toScored(keyword), toScored(semantic), DEFAULT_HYBRID_WEIGHT);
-  const topIds = blended.slice(0, k).map((b) => b.id);
-  if (topIds.length === 0) return [];
+  return tracer.startActiveSpan("retrieveContexts", async (span) => {
+    try {
+      span.setAttribute("query", query);
+      span.setAttribute("k", k);
+      span.setAttribute("useReranker", useReranker);
 
-  const rows = await prisma.$queryRaw<
-    { chunkId: string; documentId: string; title: string; fileType: string; content: string }[]
-  >`
-    SELECT dc.id::text           AS "chunkId",
-           dc."documentId"::text AS "documentId",
-           d.title               AS title,
-           d."fileType"          AS "fileType",
-           dc.content            AS content
-    FROM document_chunks dc
-    JOIN documents d ON d.id = dc."documentId"
-    WHERE dc.id::text = ANY(${topIds})
-  `;
-  const byId = new Map(rows.map((r) => [r.chunkId, r]));
+      const [keyword, semantic] = await Promise.all([
+        fetchKeyword(query, fileType, viewer),
+        fetchSemantic(query, fileType, viewer),
+      ]);
+      let blended = blendHybrid(toScored(keyword), toScored(semantic), DEFAULT_HYBRID_WEIGHT);
+      
+      if (useReranker) {
+        const topBlendedIds = new Set(blended.slice(0, k * 2).map((b) => b.id));
+        const candidatesForRerank: Candidate[] = [];
+        const seen = new Set<string>();
+        
+        for (const c of [...keyword, ...semantic]) {
+          if (topBlendedIds.has(c.chunkId) && !seen.has(c.chunkId)) {
+            candidatesForRerank.push(c);
+            seen.add(c.chunkId);
+          }
+        }
+        
+        const reranked = await tracer.startActiveSpan("rerank", async (rSpan) => {
+          const res = await rerank(query, candidatesForRerank);
+          rSpan.end();
+          return res;
+        });
+        
+        blended = reranked.map(r => ({ id: r.chunkId, score: r.score }));
+      }
 
-  return topIds
-    .map((id, i) => {
-      const r = byId.get(id);
-      return r ? { marker: i + 1, ...r } : null;
-    })
-    .filter((c): c is RetrievedContext => c !== null);
+      const topIds = blended.slice(0, k).map((b) => b.id);
+      if (topIds.length === 0) return [];
+
+      const rows = await prisma.$queryRaw<
+        { chunkId: string; documentId: string; title: string; fileType: string; content: string }[]
+      >`
+        SELECT dc.id::text           AS "chunkId",
+               dc."documentId"::text AS "documentId",
+               d.title               AS title,
+               d."fileType"          AS "fileType",
+               dc.content            AS content
+        FROM document_chunks dc
+        JOIN documents d ON d.id = dc."documentId"
+        WHERE dc.id::text = ANY(${topIds})
+      `;
+      const byId = new Map(rows.map((r) => [r.chunkId, r]));
+
+      return topIds
+        .map((id, i) => {
+          const r = byId.get(id);
+          return r ? { marker: i + 1, ...r } : null;
+        })
+        .filter((c): c is RetrievedContext => c !== null);
+    } finally {
+      span.end();
+    }
+  });
 }
