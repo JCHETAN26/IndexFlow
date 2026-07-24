@@ -1,0 +1,207 @@
+{
+  "project_id": "indexflow",
+  "project_name": "IndexFlow",
+  "repo_name": "IndexFlow",
+  "categories": ["AI Engineering", "Full-Stack Engineering", "Backend Engineering", "DevOps (partial)"],
+  "one_line_pitch": "A permission-aware hybrid search engine (Elasticsearch BM25 + pgvector) with a grounded, citation-backed RAG layer, where retrieval quality, hallucination rate, and access control are each verified by a runnable evaluation.",
+  "problem": "Keyword and vector search each miss what the other catches, and picking a blend weight by intuition is guesswork; separately, RAG is trivial to build but hard to trust (hallucination) and hard to make safe (leaking content a user shouldn't see). IndexFlow blends both retrieval strategies with a measured weight, grounds and cites answers with a refusal guardrail, enforces per-document access control on both retrieval legs, and proves each with an eval.",
+  "why_it_matters": "It demonstrates production-minded AI/search engineering rather than a demo: measured retrieval quality gated in CI, an LLM-as-judge hallucination eval, and permission-aware RAG proven not to leak restricted content. The measurement discipline and the leak test are rarely present in portfolio projects.",
+  "architecture": {
+    "summary": "A single Next.js 15 (App Router) application plus a standalone BullMQ worker. Postgres/pgvector is the source of truth, vector store, and ACL store; Elasticsearch owns BM25 keyword search, highlighting, and a denormalized ACL index; MinIO stores original files; Redis backs the ingestion queue; Ollama serves local LLMs. A shared, ACL-aware retriever is used by both search and RAG; identity from Auth.js (Google OAuth) drives an access-control filter on both retrieval legs.",
+    "components": [
+      "Search API (keyword/semantic/hybrid, ACL-filtered)",
+      "Streaming RAG answer API (NDJSON, ACL-filtered)",
+      "Shared ACL-aware retriever (lib/retrieve.ts)",
+      "Hybrid blend (lib/hybrid.ts)",
+      "In-process embeddings via Transformers.js MiniLM (lib/embed.ts)",
+      "LLM layer: Ollama generation + LLM judges (lib/llm.ts, lib/rag.ts)",
+      "Permission model + sharing (lib/acl.ts, lib/sharing.ts)",
+      "Async ingestion worker (lib/ingest.ts, worker/index.ts, lib/queue.ts)",
+      "Elasticsearch keyword index (lib/es.ts)",
+      "MinIO object storage (lib/storage.ts)",
+      "Auth.js authentication (auth.ts, auth.config.ts, middleware.ts)",
+      "Evaluation harnesses (eval/harness.ts, eval/rag-harness.ts, eval/acl-leak.ts, eval/sharing-check.ts)",
+      "Next.js UI pages (search, documents+sharing, eval, upload, jobs, signin)"
+    ],
+    "data_flow": [
+      "Upload: POST /api/documents/upload validates + stores original in MinIO, records owner, creates a QUEUED job, enqueues on Redis/BullMQ, returns 202.",
+      "Ingest (worker): download from MinIO -> extract text (.md/.txt/.pdf) -> chunk (~180 words, 30 overlap) -> embed (MiniLM 384-dim) -> dual-write chunks+vectors to Postgres and chunks+acl to Elasticsearch (idempotent re-index).",
+      "Search: GET /api/search resolves viewer via auth() -> ES BM25 + acl terms filter and pgvector cosine + SQL visibility predicate -> blendHybrid -> ranked highlighted results.",
+      "Answer (RAG): POST /api/answer resolves viewer -> retrieve top-k ACL-filtered chunks -> llama3.2 grounding prompt (cite/refuse) -> stream NDJSON answer + citations.",
+      "Sharing: owner-only mutations update Postgres ACL and re-sync the Elasticsearch acl in place so both legs reflect the change immediately."
+    ]
+  },
+  "tech_stack": [
+    "TypeScript (strict)", "Next.js 15 (App Router)", "React 19", "Tailwind CSS v4",
+    "PostgreSQL 16", "pgvector", "Elasticsearch 8", "Prisma 6",
+    "Redis 7", "BullMQ", "MinIO (S3-compatible)", "AWS SDK v3 (S3 client)",
+    "Auth.js / NextAuth v5", "@auth/prisma-adapter", "Google OAuth",
+    "Transformers.js (all-MiniLM-L6-v2, 384-dim)", "Ollama (llama3.2:3b, qwen2.5:7b, bespoke-minicheck)",
+    "unpdf", "zod", "pnpm workspace", "tsx", "Docker Compose", "GitHub Actions"
+  ],
+  "skills": [
+    "RAG", "Hybrid search (BM25 + vector fusion)", "Vector search / embeddings (pgvector, MiniLM)",
+    "LLM-as-judge evaluation", "Elasticsearch (BM25, highlighting, terms filters)", "PostgreSQL + pgvector",
+    "Prisma (schema + migrations)", "Redis + BullMQ (async jobs, retry/backoff)",
+    "Authentication + authorization (Auth.js, ACL model)", "Object storage (MinIO/S3)",
+    "Next.js 15 App Router", "React 19", "Streaming APIs (NDJSON)", "PDF/text extraction + chunking",
+    "Docker Compose", "GitHub Actions CI with service containers", "Evaluation harness design",
+    "TypeScript"
+  ],
+  "features": [
+    "Keyword / semantic / hybrid search with XSS-safe highlighting",
+    "Measured hybrid blend (weight chosen by offline sweep)",
+    "Streaming grounded RAG answers with citations and a refusal guardrail",
+    "LLM-as-judge hallucination eval (faithfulness / relevance / citation / refusal)",
+    "Permission-aware search + RAG enforced on both retrieval legs",
+    "Self-serve document sharing (public toggle, user/group grants, revoke) + permission-scoped list",
+    "Async ingestion pipeline (BullMQ worker) with retry/backoff and idempotent dual-store indexing",
+    "Google sign-in (Auth.js); PDF/Markdown/text ingestion",
+    "Live /eval page and CLI evals; retrieval eval gated in CI"
+  ],
+  "metrics": [
+    {"metric": "Hybrid retrieval MRR", "value": "0.98", "scope": "17-doc / 27-query labeled eval set", "confidence": 0.9, "resume_safe": true, "evidence": "apps/web/eval/harness.ts"},
+    {"metric": "Semantic MRR", "value": "0.96", "scope": "same labeled set", "confidence": 0.9, "resume_safe": true, "evidence": "apps/web/eval/harness.ts"},
+    {"metric": "Keyword (BM25) MRR", "value": "0.92", "scope": "same labeled set", "confidence": 0.9, "resume_safe": true, "evidence": "apps/web/eval/harness.ts"},
+    {"metric": "RAG faithfulness (answerable)", "value": "98%", "scope": "single local run, 32-question set, LLM-judged", "confidence": 0.75, "resume_safe": true, "evidence": "apps/web/eval/rag-harness.ts"},
+    {"metric": "RAG refusal correctness (unanswerable)", "value": "92%", "scope": "single local run, 12 unanswerable", "confidence": 0.75, "resume_safe": true, "evidence": "apps/web/eval/rag-harness.ts"},
+    {"metric": "Permission leak test", "value": "9/9 pass", "scope": "deterministic; real code paths", "confidence": 0.9, "resume_safe": true, "evidence": "apps/web/eval/acl-leak.ts"},
+    {"metric": "Sharing lifecycle check", "value": "8/8 pass", "scope": "deterministic; both legs", "confidence": 0.9, "resume_safe": true, "evidence": "apps/web/eval/sharing-check.ts"},
+    {"metric": "Chosen hybrid weight", "value": "0.4", "scope": "offline sweep", "confidence": 0.9, "resume_safe": true, "evidence": "apps/web/lib/hybrid.ts"}
+  ],
+  "safe_claims": [
+    "Hybrid keyword + vector retrieval with a measured blend weight (MRR 0.98 on a labeled 27-query set).",
+    "Grounded RAG with citations and a refusal guardrail, measured by an LLM-as-judge hallucination eval (98% faithfulness / 92% refusal on a 32-question local eval).",
+    "Permission-aware search + RAG enforced on both retrieval legs, proven by a 9/9 leak test.",
+    "Async ingestion on a BullMQ/Redis worker with retry/backoff and idempotent dual-store indexing.",
+    "Postgres/pgvector + Elasticsearch dual-store with Prisma schema + 7 migrations.",
+    "Retrieval quality gated in CI on real Postgres + Elasticsearch containers.",
+    "Full-stack Next.js 15 app with Auth.js Google sign-in and a self-serve sharing UI."
+  ],
+  "risky_claims": [
+    "Production-grade / enterprise-scale / deployed to real users.",
+    "High throughput or sub-second latency at scale (no load testing; only single-run local latency).",
+    "Near-zero hallucination (single local run, small LLM judges, author-designed fixtures).",
+    "Trained/fine-tuned models (pretrained + off-the-shelf only).",
+    "Used Kubernetes / cloud (AWS/GCP) / Terraform / Kafka / Airflow / dbt / Spark / warehouse (none present).",
+    "Comprehensive test coverage (no unit/integration test framework)."
+  ],
+  "evidence_sources": [
+    "README.md", "docs/screenshots/", "apps/web/lib/retrieve.ts", "apps/web/lib/hybrid.ts",
+    "apps/web/lib/acl.ts", "apps/web/lib/sharing.ts", "apps/web/lib/rag.ts", "apps/web/lib/llm.ts",
+    "apps/web/lib/es.ts", "apps/web/lib/embed.ts", "apps/web/lib/ingest.ts", "apps/web/worker/index.ts",
+    "apps/web/app/api/search/route.ts", "apps/web/app/api/answer/route.ts",
+    "apps/web/eval/harness.ts", "apps/web/eval/rag-harness.ts", "apps/web/eval/acl-leak.ts", "apps/web/eval/sharing-check.ts",
+    "apps/web/eval/corpus.json", "apps/web/eval/queries.json", "apps/web/eval/answers.json",
+    "apps/web/prisma/schema.prisma", "apps/web/prisma/migrations/", "infra/docker-compose.yml", ".github/workflows/ci.yml"
+  ],
+  "role_fit": {
+    "data_engineer": {
+      "score": 42,
+      "reasons": [
+        "Real app-level async ingestion pipeline (extract/chunk/embed/dual-write) with idempotent re-index and backfill scripts.",
+        "No batch/stream data-engineering stack (Kafka/Airflow/dbt/Spark/warehouse); small corpus, no throughput metrics."
+      ]
+    },
+    "ai_engineer": {
+      "score": 86,
+      "reasons": [
+        "RAG, hybrid retrieval, embeddings, and permission-aware generation with a leak-test proof.",
+        "LLM-as-judge hallucination eval with generator != judges on an adversarial set.",
+        "Weakness: metrics are a single local run on small models; no training."
+      ]
+    },
+    "backend_engineer": {
+      "score": 80,
+      "reasons": [
+        "Postgres/pgvector + Elasticsearch dual-store, Prisma migrations, Redis/BullMQ worker, ACL model, NDJSON streaming.",
+        "12 API routes with auth and owner-only mutations; XSS-safe highlighting."
+      ]
+    },
+    "full_stack_engineer": {
+      "score": 82,
+      "reasons": [
+        "End-to-end Next.js 15 app: UI pages + API routes + auth + streaming + sharing UI.",
+        "Live eval page renders metrics from the same harness gated in CI."
+      ]
+    },
+    "devops_engineer": {
+      "score": 50,
+      "reasons": [
+        "Docker Compose multi-service infra + GitHub Actions CI with service containers and a quality gate.",
+        "No cloud deploy, IaC, orchestration, or observability stack."
+      ]
+    },
+    "analytics_engineer": {
+      "score": 20,
+      "reasons": [
+        "No dbt/warehouse/BI/semantic layer; not a fit."
+      ]
+    }
+  },
+  "resume_bullets": {
+    "data_engineer": [
+      "Built a document ingestion pipeline (PDF/Markdown/text -> chunk -> embed -> dual-store) with idempotent re-indexing and Postgres/Elasticsearch consistency via a shared chunk id.",
+      "Wrote idempotent backfill jobs to (re)populate embeddings in pgvector and rebuild the Elasticsearch keyword index (with ACL principals) from Postgres as the source of truth."
+    ],
+    "ai_engineer": [
+      "Built a hybrid retriever fusing Elasticsearch BM25 and pgvector via a normalized weighted blend, reaching MRR 0.98 (vs 0.96 semantic / 0.92 keyword) on a labeled 27-query eval with the weight chosen by an offline sweep.",
+      "Engineered a grounded RAG layer (local llama3.2) that cites each claim and refuses when context is insufficient, streamed to the UI over NDJSON.",
+      "Designed an LLM-as-judge hallucination eval (generator != judges) scoring faithfulness/relevance/citation/refusal; 98% faithfulness / 92% refusal on a 32-question adversarial set.",
+      "Made search and RAG permission-aware by enforcing a per-document ACL on both retrieval legs; a leak test proves restricted docs are never retrieved or cited (9/9)."
+    ],
+    "backend_engineer": [
+      "Built an async ingestion pipeline on a BullMQ/Redis worker with retry + exponential backoff and idempotent dual-store indexing.",
+      "Modeled documents, identity, and a group-based ACL in Postgres with Prisma across 7 migrations.",
+      "Implemented owner-only sharing that re-syncs the denormalized Elasticsearch ACL in place so changes take effect on both retrieval legs immediately."
+    ],
+    "full_stack_engineer": [
+      "Shipped a full-stack Next.js 15 app: hybrid search with a streamed cited answer, a permission-scoped documents list with a self-serve sharing panel, plus upload, jobs, and a live eval page.",
+      "Added Google sign-in with Auth.js and used the session to drive per-user permission filtering across search, RAG, and document management."
+    ],
+    "devops_engineer": [
+      "Provisioned local infra as code with Docker Compose (Postgres/pgvector, Redis, Elasticsearch, MinIO) and enforced a CI quality gate running the retrieval eval against real service containers on every PR."
+    ],
+    "analytics_engineer": []
+  },
+  "interview_notes": {
+    "short_pitch": "A workspace search engine that blends BM25 keyword and pgvector semantic search into a measured hybrid ranking, adds a grounded RAG layer that cites sources and refuses when unsupported, and enforces per-user access control on both retrieval legs — with retrieval quality, hallucination rate, and permission enforcement each proven by a runnable eval. Local models, no API keys.",
+    "deep_dive": "Next.js app + BullMQ worker over Postgres/pgvector, Elasticsearch, Redis, MinIO, and Ollama. Uploads go to MinIO and a Redis job; the worker extracts, chunks (~180 words/30 overlap), embeds with MiniLM (384-dim), and dual-writes to Postgres and Elasticsearch under a shared chunk id. A single ACL-aware retriever fetches keyword + semantic candidates and blends them (weight 0.4 from a sweep). RAG reuses that retriever, grounds llama3.2, and streams cited answers. Permissions: denormalized ACL + terms filter in ES, SQL predicate in PG, a viewer required at every retriever entry point, proven by a leak test. Everything is measured (retrieval eval in CI, LLM-judge hallucination eval, ACL leak + sharing checks).",
+    "likely_questions": [
+      "Why hybrid instead of vector-only?",
+      "How did you pick the blend weight?",
+      "How do you keep Postgres and Elasticsearch consistent?",
+      "How is permission filtering enforced and verified?",
+      "How do you measure hallucination and how reliable are the numbers?",
+      "Why local models?",
+      "How does ingestion handle failure?",
+      "Is it deployed / at what scale?",
+      "Where are the tests?",
+      "What was the hardest bug?"
+    ],
+    "weak_areas": [
+      "Not deployed; no users, scale, or latency benchmarks.",
+      "No unit/integration test framework (evals + ACL checks only).",
+      "RAG metrics are a single local run with small LLM judges.",
+      "Group creation/membership is DB-only.",
+      "Pretrained/off-the-shelf models (no training/fine-tuning)."
+    ]
+  },
+  "verification": {
+    "overall_confidence": 0.85,
+    "strongest_evidence": [
+      "apps/web/eval/acl-leak.ts (deterministic permission leak proof, 9/9)",
+      "apps/web/eval/harness.ts + .github/workflows/ci.yml (retrieval eval gated in CI on real containers)",
+      "apps/web/lib/retrieve.ts + lib/acl.ts (ACL enforced on both retrieval legs via a shared viewer-required retriever)",
+      "apps/web/lib/ingest.ts + worker/index.ts (async dual-store ingestion pipeline)",
+      "apps/web/eval/rag-harness.ts (LLM-as-judge hallucination eval)"
+    ],
+    "missing_evidence": [
+      "Scale + latency benchmarks (p50/p95/p99, docs/sec) — none exist.",
+      "Unit/integration test suite — none.",
+      "RAG metric stability (multi-run mean +/- std) — single run only.",
+      "Live deployment + observability — none."
+    ],
+    "repo_scan_notes": "Local/portfolio monorepo (~6,900 LOC TS/TSX in apps/web, 15 commits, 7 Prisma migrations). Every claimed feature has working code; correctness verified by four eval/check programs rather than a unit-test framework. No production, users, scale, or cloud deployment. Metrics are from local runs on small labeled fixtures (17 docs retrieval, 32-question RAG) and must be framed as such."
+  }
+}

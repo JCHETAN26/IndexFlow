@@ -36,8 +36,8 @@ infrastructure breadth for its own sake.
    to confirm no regression.
 
 **Definition of done for the portfolio:** a live, clickable demo where search feels like
-Notion, backed by an eval page showing measured numbers (keyword-only vs vector-only vs
-hybrid) with the blend weights justified by those numbers.
+Notion, backed by an eval page showing measured numbers (keyword vs vector vs hybrid vs reranking) 
+with the blend weights justified by those numbers, and a security evaluation proving cross-tenant isolation and injection resistance.
 
 ---
 
@@ -103,6 +103,7 @@ When a file is uploaded:
 * pgvector
 * Redis
 * BullMQ
+* OpenTelemetry (for tracing and observability)
 
 ## Search & Storage
 
@@ -415,13 +416,16 @@ Deliverable: upload a file, type a query, get a real highlighted result.
 
 Deliverable: search works even when query words don't exactly match document words.
 
-## Step 3 — Evaluation harness (the centerpiece)
+## Step 3 — AI Platform Evaluation & Observability
 
-* Hand-label 15–30 queries against the seed corpus (which chunk is the correct answer).
-* Script computes recall@k and MRR for keyword-only, vector-only, and hybrid.
-* Use it to choose the blend weights (replace the guessed `0.55 / 0.45`).
+* Hand-label 15–30 queries against the seed corpus (which chunk is the correct answer) with exact test denominators.
+* Script computes recall@k, precision@k, and MRR comparing keyword-only, vector-only, hybrid, and hybrid + reranking.
+* Implement cross-tenant adversarial tests, metadata-filter bypass attempts, and document-level prompt injections (e.g., "Ignore previous instructions", "Reveal other customer documents").
+* Add OpenTelemetry tracing to record retrieval latency, model latency, total latency, input/output tokens, and estimated cost per query.
+* Use the eval to choose the blend weights and confirm no authorization failures (testing at both retrieval and database layers).
+* Measure answer-level metrics separately (faithfulness, citation correctness, refusal correctness, answer relevance).
 
-Deliverable: `pnpm eval` prints measured numbers per strategy.
+Deliverable: `pnpm eval` or CI job prints measured numbers per strategy, adversarial test results, and latency/cost metrics.
 
 ## Step 4 — Hybrid blend + eval page
 
@@ -457,9 +461,20 @@ Deliverable: the real architecture, proven equivalent or better by the eval.
 
 ---
 
+# 12. AI Platform Evaluation & Observability Requirements
 
+To ensure IndexFlow is a true AI platform rather than just a RAG application, we adhere to the following strong completion criteria:
 
-# 12. Claude Code System Prompt
+* **Retrieval Outperformance:** One retrieval method (e.g., hybrid + reranking) must clearly outperform the alternatives.
+* **Security & Authorization:** No authorization failures across a documented adversarial test set (testing both retrieval and database layers).
+* **Performance:** Stable p95 latency tracked via a simple OpenTelemetry dashboard.
+* **Reproducibility:** Reproducible evaluation through one command (`pnpm eval`) or CI job.
+* **Observability:** Record latency (retrieval, model, total), input/output tokens, estimated cost per query, errors, and retrieval mode without overbuilding the stack.
+* **Answer-Level Metrics:** Separately measure answer relevance, faithfulness, citation correctness, and refusal correctness.
+
+---
+
+# 13. Claude Code System Prompt
 
 Use this prompt when building IndexFlow.
 

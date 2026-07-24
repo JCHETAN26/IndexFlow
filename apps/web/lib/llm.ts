@@ -1,4 +1,7 @@
 import { Ollama } from "ollama";
+import { trace } from "@opentelemetry/api";
+
+const tracer = trace.getTracer("indexflow-web");
 
 /**
  * Local LLM layer for Stage B (grounded RAG answers + LLM-as-judge eval), served entirely
@@ -81,23 +84,30 @@ export async function* streamAnswer(
   question: string,
   contexts: AnswerContext[],
 ): AsyncGenerator<AnswerEvent> {
-  const res = await ollama().chat({
-    model: GEN_MODEL,
-    messages: genMessages(question, contexts),
-    stream: true,
-    options: { temperature: 0 },
-  });
-  let full = "";
-  let outputTokens: number | null = null;
-  for await (const part of res) {
-    const t = part.message?.content ?? "";
-    if (t) {
-      full += t;
-      yield { type: "delta", text: t };
+  const span = tracer.startSpan("streamAnswer");
+  span.setAttribute("model", GEN_MODEL);
+  try {
+    const res = await ollama().chat({
+      model: GEN_MODEL,
+      messages: genMessages(question, contexts),
+      stream: true,
+      options: { temperature: 0 },
+    });
+    let full = "";
+    let outputTokens: number | null = null;
+    for await (const part of res) {
+      const t = part.message?.content ?? "";
+      if (t) {
+        full += t;
+        yield { type: "delta", text: t };
+      }
+      if (part.done) outputTokens = part.eval_count ?? outputTokens;
     }
-    if (part.done) outputTokens = part.eval_count ?? outputTokens;
+    span.setAttribute("outputTokens", outputTokens ?? 0);
+    yield { type: "done", text: full.trim(), outputTokens, refused: looksLikeRefusal(full) };
+  } finally {
+    span.end();
   }
-  yield { type: "done", text: full.trim(), outputTokens, refused: looksLikeRefusal(full) };
 }
 
 /** Non-streaming generation for the eval harness. `keepAlive` controls model residency. */
@@ -106,15 +116,23 @@ export async function generateAnswer(
   contexts: AnswerContext[],
   keepAlive?: string | number,
 ): Promise<{ text: string; outputTokens: number | null; refused: boolean }> {
-  const res = await ollama().chat({
-    model: GEN_MODEL,
-    messages: genMessages(question, contexts),
-    stream: false,
-    keep_alive: keepAlive,
-    options: { temperature: 0 },
+  return tracer.startActiveSpan("generateAnswer", async (span) => {
+    span.setAttribute("model", GEN_MODEL);
+    try {
+      const res = await ollama().chat({
+        model: GEN_MODEL,
+        messages: genMessages(question, contexts),
+        stream: false,
+        keep_alive: keepAlive,
+        options: { temperature: 0 },
+      });
+      const text = res.message.content.trim();
+      span.setAttribute("outputTokens", res.eval_count ?? 0);
+      return { text, outputTokens: res.eval_count ?? null, refused: looksLikeRefusal(text) };
+    } finally {
+      span.end();
+    }
   });
-  const text = res.message.content.trim();
-  return { text, outputTokens: res.eval_count ?? null, refused: looksLikeRefusal(text) };
 }
 
 /**

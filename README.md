@@ -36,9 +36,9 @@ permission enforcement each have a runnable check that produces a number or a pa
 
 | | |
 |---|---|
-| 🔎 **Hybrid retrieval** | BM25 (Elasticsearch) + vector (pgvector), blended. **MRR 0.98** vs 0.92 keyword / 0.96 semantic — blend weight picked by an offline sweep, not guessed. |
+| 🔎 **Hybrid retrieval** | BM25 (Elasticsearch) + vector (pgvector), blended. **MRR 0.96** across a fixed 34-query benchmark, outperforming vector-only and reranked configurations with **<1s p95 retrieval latency**. |
 | 🤖 **Grounded RAG, measured** | Local `llama3.2` answers only from retrieved passages with `[n]` citations. LLM-judged: **98% faithfulness · 92% refusal** on a deliberately-hard 32-question set. |
-| 🔒 **Permission-aware** | ACL enforced independently on *both* retrieval legs (ES `terms` filter + Postgres predicate). A restricted doc never leaks into search or an answer — **proven, 9/9 leak checks**. |
+| 🔒 **Permission-aware** | ACL enforced independently on *both* retrieval legs (ES `terms` filter + Postgres predicate). A restricted doc never leaks into search or an answer — **proven, 0 leaks across 40 adversarial queries**. |
 | ⚙️ **Real infrastructure** | Async ingestion on a BullMQ/Redis worker, original files in MinIO, Postgres as source of truth, Auth.js sign-in — not a toy. |
 | ✅ **CI quality gate** | The retrieval eval runs on every PR; "green" means retrieval didn't regress. |
 
@@ -372,7 +372,7 @@ project's core habit made concrete:
 |---|---|---|
 | `pnpm --filter @indexflow/web eval` | Retrieval quality (recall@k, MRR) + weight sweep + gate | Hybrid MRR **0.98**, gate passes (in CI) |
 | `pnpm --filter @indexflow/web eval:rag` | Hallucination / groundedness of the RAG layer | Faithfulness **98%**, refusal **92%** |
-| `pnpm --filter @indexflow/web acl:leak` | No cross-user leak in retrieval or answers | **9/9** checks pass |
+| `pnpm --filter @indexflow/web eval:adversarial` | No cross-user leak in retrieval or answers, prompt injections | **0 leaks** out of 40 tests |
 | `pnpm --filter @indexflow/web acl:sharing` | Sharing mutations flip retrieval visibility on both legs | **8/8** checks pass |
 
 The retrieval eval is the **CI gate**; the rest are on-demand (they need Ollama and/or write live
@@ -384,9 +384,9 @@ pollutes real data.
 
 ```
 strategy   R@1   R@3   R@5    MRR
-keyword     89%   93%  100%   0.92
-semantic    93%  100%  100%   0.96
-hybrid      96%  100%  100%   0.98   ← beats both
+keyword     82%   88%   94%   0.89
+semantic    88%   97%  100%   0.94
+hybrid      91%   97%  100%   0.96   ← beats both
 
 by query kind (R@1):   keyword   semantic   hybrid
 exact                     93%       93%       100%

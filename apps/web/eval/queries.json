@@ -25,5 +25,12 @@
   { "q": "invoice.payment_failed", "relevant": ["billing-webhooks.md"], "kind": "exact" },
   { "q": "the customer's card was declined", "relevant": ["failed-payments.md"], "kind": "paraphrase" },
   { "q": "ERR_QUOTA_4096", "relevant": ["error-code-reference.md"], "kind": "exact" },
-  { "q": "ERR_DB_5002", "relevant": ["error-code-reference.md"], "kind": "exact" }
+  { "q": "ERR_DB_5002", "relevant": ["error-code-reference.md"], "kind": "exact" },
+  { "q": "what happens when a payment fails?", "relevant": ["failed-payments.md", "billing-webhooks.md"], "kind": "paraphrase" },
+  { "q": "memory issues and stalls", "relevant": ["db-connection-pool.md", "postgres-config-tuning.md"], "kind": "paraphrase" },
+  { "q": "storage space full", "relevant": ["storage-limits.md"], "kind": "paraphrase" },
+  { "q": "ERR_QUOTA_4096 storage", "relevant": ["error-code-reference.md", "storage-limits.md"], "kind": "exact" },
+  { "q": "how to deploy this in AWS", "relevant": [], "kind": "paraphrase" },
+  { "q": "what does ERR_NET_5200 mean", "relevant": ["error-code-reference.md"], "kind": "exact" },
+  { "q": "can I use a custom theme color", "relevant": ["dark-mode-theming.md"], "kind": "paraphrase" }
 ]

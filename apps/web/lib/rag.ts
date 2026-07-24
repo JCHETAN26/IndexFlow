@@ -23,7 +23,9 @@ export function toAnswerContexts(contexts: RetrievedContext[]): AnswerContext[] 
  * when nothing was retrieved, so the caller can refuse without spending a generation.
  */
 export async function answerQuestion(query: string, viewer: Viewer, k = RAG_K) {
+  const start = performance.now();
   const contexts = await retrieveContexts(query, k, viewer);
+  const retrievalMs = performance.now() - start;
   const answer = contexts.length > 0 ? streamAnswer(query, toAnswerContexts(contexts)) : null;
-  return { contexts, answer };
+  return { contexts, answer, retrievalMs };
 }

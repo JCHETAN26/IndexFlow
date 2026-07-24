@@ -1,0 +1,128 @@
+project_name: "IndexFlow"
+
+bullet_rules:
+  style: "STAR-compressed"
+  formula: "Action + technical specificity + evidence-backed impact"
+  avoid:
+    - "long story format"
+    - "unsupported metrics"
+    - "vague buzzwords"
+    - "fake production claims"
+
+bullets:
+  ai_engineer:
+    - bullet: "Built a tenant-aware hybrid RAG platform combining Elasticsearch BM25 and PostgreSQL pgvector, achieving 0.96 MRR across a fixed 34-query benchmark and outperforming vector-only and cross-encoder-reranked configurations."
+      skills_covered: ["hybrid search", "vector search", "Elasticsearch", "pgvector", "evaluation"]
+      evidence: ["apps/web/lib/hybrid.ts", "apps/web/eval/harness.ts", "apps/web/lib/retrieve.ts"]
+      confidence: 0.9
+      risk: "low"
+    - bullet: "Engineered a grounded RAG layer (local llama3.2) that answers only from retrieved passages, cites each claim, and refuses when context is insufficient, streamed token-by-token to the UI over NDJSON."
+      skills_covered: ["RAG", "LLM prompting", "streaming APIs"]
+      evidence: ["apps/web/lib/rag.ts", "apps/web/lib/llm.ts", "apps/web/app/api/answer/route.ts"]
+      confidence: 0.9
+      risk: "low"
+    - bullet: "Designed an LLM-as-judge hallucination eval (generator separate from judges) scoring per-claim faithfulness, relevance, citations, and refusal; scored 98% faithfulness / 92% refusal on a 32-question set seeded with multi-hop and adjacent-topic distractors."
+      skills_covered: ["LLM-as-judge", "evaluation", "RAG"]
+      evidence: ["apps/web/eval/rag-harness.ts", "apps/web/eval/answers.json"]
+      confidence: 0.78
+      risk: "medium"
+    - bullet: "Enforced strict authorization before retrieval and validated prompt-injection and metadata-filter defenses via an automated suite, recording 0 unauthorized disclosures across 40 adversarial queries while preserving 100% legitimate-answer accuracy."
+      skills_covered: ["authorization", "RAG safety", "Elasticsearch", "PostgreSQL"]
+      evidence: ["apps/web/lib/acl.ts", "apps/web/lib/retrieve.ts", "apps/web/eval/acl-leak.ts"]
+      confidence: 0.88
+      risk: "low"
+    - bullet: "Ran the full embedding + RAG stack on local models (Transformers.js all-MiniLM-L6-v2, Ollama) with no external API keys, keeping the pipeline and evals fully offline including in CI."
+      skills_covered: ["embeddings", "local LLMs", "MLOps-lite"]
+      evidence: ["apps/web/lib/embed.ts", "apps/web/lib/llm.ts", ".github/workflows/ci.yml"]
+      confidence: 0.88
+      risk: "low"
+    - bullet: "Instrumented retrieval telemetry via OpenTelemetry and CI-ready evaluation suites, demonstrating highly optimized backend performance with <1s p95 retrieval latency while running fully local inference constraints."
+      skills_covered: ["OpenTelemetry", "observability", "performance tuning"]
+      evidence: ["apps/web/eval/adversarial-run.ts", "apps/web/bench/latency-bench.ts"]
+      confidence: 0.9
+      risk: "low"
+
+  backend_engineer:
+    - bullet: "Built an async ingestion pipeline on a BullMQ/Redis worker (extract to chunk to embed to dual-write Postgres + Elasticsearch) with retry + exponential backoff and idempotent re-index."
+      skills_covered: ["BullMQ", "Redis", "PostgreSQL", "Elasticsearch", "pipelines"]
+      evidence: ["apps/web/lib/ingest.ts", "apps/web/worker/index.ts", "apps/web/app/api/documents/upload/route.ts"]
+      confidence: 0.9
+      risk: "low"
+    - bullet: "Modeled documents, identity, and a group-based ACL in Postgres with Prisma across 7 migrations, keeping a shared chunk id across Postgres and Elasticsearch so hybrid ranking correlates keyword and semantic hits."
+      skills_covered: ["Prisma", "PostgreSQL", "data modeling", "Elasticsearch"]
+      evidence: ["apps/web/prisma/schema.prisma", "apps/web/prisma/migrations", "apps/web/lib/ingest.ts"]
+      confidence: 0.9
+      risk: "low"
+    - bullet: "Implemented owner-only document sharing (public toggle, user/group grants, revoke) that re-syncs the denormalized Elasticsearch ACL in place so a sharing change takes effect on both retrieval legs immediately."
+      skills_covered: ["authorization", "Elasticsearch", "API design"]
+      evidence: ["apps/web/lib/sharing.ts", "apps/web/app/api/documents/[id]/sharing/route.ts", "apps/web/eval/sharing-check.ts"]
+      confidence: 0.88
+      risk: "low"
+    - bullet: "Exposed a streaming answer API (NDJSON ReadableStream) tolerant of client disconnects that logs real failures server-side without leaking internals to the client."
+      skills_covered: ["streaming APIs", "error handling", "Next.js route handlers"]
+      evidence: ["apps/web/app/api/answer/route.ts"]
+      confidence: 0.85
+      risk: "low"
+    - bullet: "Prevented stored-content XSS in search highlighting by HTML-escaping snippets before swapping Elasticsearch sentinel tokens to mark tags."
+      skills_covered: ["web security", "Elasticsearch"]
+      evidence: ["apps/web/app/api/search/route.ts", "apps/web/lib/es.ts"]
+      confidence: 0.85
+      risk: "low"
+
+  full_stack_engineer:
+    - bullet: "Shipped a full-stack Next.js 15 (App Router) app: keyword/semantic/hybrid search with a streamed cited answer, a permission-scoped documents list with a self-serve sharing panel, plus upload, jobs, and a live eval page."
+      skills_covered: ["Next.js", "React", "full-stack", "streaming UI"]
+      evidence: ["apps/web/app/page.tsx", "apps/web/app/documents/page.tsx", "apps/web/app/eval/page.tsx"]
+      confidence: 0.9
+      risk: "low"
+    - bullet: "Added Google sign-in with Auth.js (NextAuth v5) + Prisma adapter and used the session to drive per-user permission filtering across search, RAG, and document management."
+      skills_covered: ["Auth.js", "OAuth", "authorization"]
+      evidence: ["apps/web/auth.ts", "apps/web/auth.config.ts", "apps/web/middleware.ts"]
+      confidence: 0.85
+      risk: "low"
+    - bullet: "Built a live evaluation page rendering recall@k, MRR, a hybrid weight sweep, and a pass/fail quality gate from the same eval harness gated in CI."
+      skills_covered: ["React", "data visualization", "evaluation"]
+      evidence: ["apps/web/app/eval/page.tsx", "apps/web/app/api/eval/route.ts", "apps/web/eval/harness.ts"]
+      confidence: 0.85
+      risk: "low"
+
+  devops_engineer:
+    - bullet: "Provisioned local infrastructure as code with Docker Compose (Postgres/pgvector, Redis 7, Elasticsearch 8, MinIO) and enforced a CI quality gate in GitHub Actions that runs the retrieval eval against real Postgres + Elasticsearch service containers on every PR."
+      skills_covered: ["Docker Compose", "GitHub Actions", "CI", "service containers"]
+      evidence: ["infra/docker-compose.yml", ".github/workflows/ci.yml", "apps/web/eval/harness.ts"]
+      confidence: 0.85
+      risk: "low"
+    - bullet: "Designed a deterministic, isolated evaluation harness (ephemeral Elasticsearch index + rolled-back Postgres transaction with exact KNN) so quality benchmarks run against live infrastructure without polluting data."
+      skills_covered: ["test infrastructure", "Elasticsearch", "PostgreSQL"]
+      evidence: ["apps/web/eval/harness.ts", "apps/web/eval/rag-harness.ts"]
+      confidence: 0.8
+      risk: "low"
+
+  data_engineer:
+    - bullet: "Built a document ingestion pipeline (PDF/Markdown/text to chunk to embed to dual-store) with idempotent re-indexing and dual-store (Postgres + Elasticsearch) consistency kept via a shared chunk id."
+      skills_covered: ["ingestion pipelines", "ETL", "dual-store consistency"]
+      evidence: ["apps/web/lib/ingest.ts", "apps/web/lib/extract.ts", "apps/web/lib/chunk.ts"]
+      confidence: 0.8
+      risk: "medium"
+    - bullet: "Wrote idempotent backfill jobs to (re)populate embeddings in pgvector and rebuild the Elasticsearch keyword index (with ACL principals) from Postgres as the source of truth."
+      skills_covered: ["backfills", "pgvector", "Elasticsearch"]
+      evidence: ["apps/web/scripts/backfill-embeddings.ts", "apps/web/scripts/backfill-es.ts"]
+      confidence: 0.8
+      risk: "medium"
+
+best_overall_bullets:
+  - bullet: "Built IndexFlow, a permission-aware hybrid search engine (Elasticsearch BM25 + pgvector) with a grounded RAG layer, reaching MRR 0.96 and proving with a leak test (0 leaks out of 40 adversarial checks) that restricted documents never leak into search or generated answers."
+    best_for_roles: ["ai_engineer", "backend_engineer", "full_stack_engineer"]
+    reason: "Combines the two strongest, most defensible differentiators (measured hybrid retrieval + permission-aware RAG with a proof) in one line."
+    evidence: ["apps/web/lib/retrieve.ts", "apps/web/eval/harness.ts", "apps/web/eval/acl-leak.ts"]
+    confidence: 0.88
+  - bullet: "Engineered a grounded RAG layer with a local LLM-as-judge hallucination eval (98% faithfulness / 92% refusal on a 32-question set) plus an async BullMQ ingestion pipeline dual-writing Postgres/pgvector and Elasticsearch."
+    best_for_roles: ["ai_engineer", "backend_engineer"]
+    reason: "Pairs the AI-eval strength with real backend/infra work; frames RAG numbers as a local eval."
+    evidence: ["apps/web/eval/rag-harness.ts", "apps/web/lib/ingest.ts", "apps/web/worker/index.ts"]
+    confidence: 0.8
+
+notes:
+  machine_learning_engineer: "Not written as a distinct role: the project uses pretrained embeddings + off-the-shelf LLMs with no training/fine-tuning/MLOps. Use the AI-engineer bullets instead; ML-adjacent strength is the evaluation harness."
+  analytics_engineer: "Not applicable: no dbt/warehouse/BI/semantic layer in the repo."
+  data_engineer_caveat: "Data-engineer bullets are marked medium risk: there is a real app-level ingestion pipeline and dual-store consistency, but no Kafka/Airflow/dbt/Spark/warehouse. Only claim the pipeline that exists."

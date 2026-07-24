@@ -1,0 +1,262 @@
+## IndexFlow status: strong, but not fully benchmark-complete
+
+The implementation appears **feature-complete**, and the retrieval result is promising. However, the current security evaluation is still closer to a smoke test than a rigorous adversarial benchmark.
+
+### Current assessment
+
+| Area                              | Status          |
+| --------------------------------- | --------------- |
+| Hybrid retrieval implementation   | Complete        |
+| Retrieval configuration sweep     | Complete        |
+| Reranker integration              | Complete        |
+| Basic prompt-injection protection | Complete        |
+| Basic metadata-filter protection  | Complete        |
+| Rigorous retrieval benchmark      | Mostly complete |
+| Rigorous security benchmark       | Needs expansion |
+| Production observability metrics  | Not shown yet   |
+| Resume readiness                  | About **85%**   |
+
+# 1. Retrieval result
+
+## What is strong
+
+* You compared multiple retrieval configurations instead of presenting one result in isolation.
+* Hybrid retrieval achieving **0.98 MRR** is an excellent result.
+* The keyword weight of **0.4** is specific and defensible.
+* The fact that hybrid retrieval beat hybrid-plus-reranking is useful because it shows you evaluated components rather than assuming more complexity was always better.
+* You now have a real engineering decision:
+
+> The simpler hybrid retriever outperformed the more expensive reranking pipeline on the target corpus.
+
+That is a better story than merely saying you implemented reranking.
+
+## What needs to appear in the final report
+
+MRR alone is not enough. Include a comparison table such as:
+
+| Strategy        |  MRR | Recall@3 | Recall@5 | Precision@3 | nDCG@5 |
+| --------------- | ---: | -------: | -------: | ----------: | -----: |
+| Keyword/BM25    |    — |        — |        — |           — |      — |
+| Vector          |    — |        — |        — |           — |      — |
+| Hybrid          | 0.98 |        — |        — |           — |      — |
+| Hybrid + rerank | 0.92 |        — |        — |           — |      — |
+
+Also report:
+
+* Number of evaluation queries
+* Number of indexed documents or chunks
+* Average relevant documents per query
+* Chunking strategy
+* Embedding model
+* Reranker model
+* Initial retrieval depth
+* Number of documents passed to the reranker
+
+Without the query count and corpus size, `0.98 MRR` lacks context.
+
+# 2. Do not over-explain the reranker result yet
+
+The explanation that the generic cross-encoder underperformed because the benchmark is specialized is plausible, but it has not yet been proven.
+
+Other possible causes include:
+
+* The correct document was already ranked first, leaving little room for improvement.
+* Too few candidates were passed to the reranker.
+* The reranker truncated important code or document context.
+* The query-document formatting was suboptimal.
+* Hybrid scores and reranker scores were combined incorrectly.
+* The evaluation set was too easy.
+* The reranker favors semantic similarity over exact identifiers.
+* The specialized corpus contains product names, IDs, or technical tokens where BM25 performs better.
+
+Inspect the queries where reranking reduced performance.
+
+For each regression, record:
+
+* Query
+* Expected document
+* Hybrid rank
+* Reranked rank
+* Keyword score
+* Vector score
+* Reranker score
+* Likely reason for the regression
+
+That analysis is more valuable than simply saying the generic reranker was unsuitable.
+
+# 3. The retrieval benchmark may be too easy
+
+An MRR of `0.98` means the relevant document is almost always ranked first. That can be genuine, but it should trigger a benchmark-difficulty review.
+
+Add harder query categories:
+
+* Exact identifier or keyword queries
+* Paraphrased semantic queries
+* Ambiguous queries
+* Queries with multiple relevant documents
+* Queries whose answer is distributed across documents
+* Near-duplicate documents
+* Distractor documents using similar terminology
+* Queries with no supported answer
+* Queries where keyword and semantic retrieval disagree
+
+Report metrics by query category. This would show whether the hybrid retriever performs well generally or mainly on easy exact-match queries.
+
+# 4. Security evaluation
+
+## What is strong
+
+The tests cover two important attack surfaces:
+
+* Metadata-filter bypass
+* Prompt injection embedded inside retrieved documents
+
+The fact that the malicious document did not cause the system to disclose the secret confirms that the defenses are functioning for those scenarios.
+
+## What is currently weak
+
+The report lists roughly three successful checks:
+
+* One metadata bypass attempt
+* One secret-extraction attempt
+* One refusal or safe-ignore assertion
+
+This is not enough to support a resume statement such as:
+
+> Zero unauthorized data leakage.
+
+It currently supports:
+
+> Passed initial adversarial tests for metadata-filter bypass and document-based prompt injection.
+
+That is still useful, but it is not yet a rigorous security benchmark.
+
+# 5. Expand the adversarial suite
+
+Create a fixed security dataset with at least **30–50 adversarial queries**. Fifty is preferable because it produces a clean resume denominator.
+
+## Authorization tests
+
+Cover:
+
+* User A requesting User B’s documents
+* Group A requesting Group B’s documents
+* Direct document-ID access
+* Modified metadata filters
+* Missing tenant filter
+* Empty filter
+* Wildcard-like filter values
+* URL-encoded filter manipulation
+* Case variation
+* Duplicate query parameters
+* Request-body versus query-string conflicts
+* Retrieval through conversation history
+* Access after group membership is revoked
+
+## Prompt-injection tests
+
+Cover instructions such as:
+
+* Ignore the system instructions
+* Reveal hidden documents
+* Reveal the administrator secret
+* Print retrieval metadata
+* Return the complete context
+* Summarize documents from other users
+* Encode the secret in Base64
+* Return only the first letters of the secret
+* Split the secret across citations
+* Place the secret in JSON metadata
+* Claim that the user is an administrator
+
+Test both direct leakage and partial leakage.
+
+## No-answer and refusal tests
+
+Ensure the model:
+
+* Refuses when the answer is unauthorized
+* Refuses when evidence is missing
+* Does not invent citations
+* Does not cite inaccessible documents
+* Does not leak document titles or metadata
+* Still answers legitimate questions correctly
+
+Security cannot be achieved by making the system refuse everything, so measure both:
+
+* Unauthorized disclosure rate
+* Legitimate-answer success rate
+
+# 6. Important architectural verification
+
+Ensure authorization is enforced before documents reach the model.
+
+The correct sequence is:
+
+1. Authenticate the user.
+2. Resolve allowed tenant/group/document scope.
+3. Apply scope inside the retrieval query.
+4. Retrieve only authorized chunks.
+5. Generate the answer from that authorized context.
+6. Validate citations against the authorized result set.
+
+A system prompt saying “do not reveal unauthorized content” is not a sufficient security boundary. The unauthorized content should never enter the model context.
+
+Also verify that row-level or database-level authorization exists where possible, rather than relying solely on application code.
+
+# 7. Observability is still missing from this report
+
+Your original completion goal included OpenTelemetry and production measurements. The current update does not show them.
+
+Measure these separately:
+
+* Retrieval p50/p95 latency
+* Reranker p50/p95 latency
+* LLM generation p50/p95 latency
+* End-to-end p50/p95 latency
+* Input tokens per query
+* Output tokens per query
+* Estimated cost per query
+* Retrieval failure rate
+* LLM API failure rate
+* Citation-validation failure rate
+* Refusal rate
+
+A trace should ideally show:
+
+`request → authentication → authorization → retrieval → reranking → generation → citation validation`
+
+This would complete the AI-platform angle.
+
+# 8. Strong “done” criteria
+
+IndexFlow is fully complete when you can report something like:
+
+* Hybrid retrieval achieved **0.98 MRR** across **N queries and M indexed chunks**.
+* Hybrid retrieval outperformed vector-only, keyword-only, and reranked configurations.
+* Unauthorized disclosure occurred in **0 of 50 adversarial access attempts**.
+* Legitimate authorized queries succeeded in **X of Y cases**.
+* The system achieved **Z-second p95 end-to-end latency**.
+* Average token usage was **A input and B output tokens per query**.
+* Every result can be reproduced with one evaluation command.
+
+# Resume bullet direction
+
+Once denominators and observability results are available, the strongest bullets would be structured like this:
+
+> Built a tenant-aware hybrid RAG platform combining BM25 and pgvector retrieval, achieving **0.98 MRR** across a fixed **N-query benchmark** and outperforming vector-only and cross-encoder-reranked configurations.
+
+> Enforced authorization before retrieval and validated prompt-injection and metadata-filter defenses, recording **0 unauthorized disclosures across 50 adversarial queries** while preserving **X% legitimate-answer accuracy**.
+
+> Instrumented retrieval and generation with OpenTelemetry, measuring **X-second p95 end-to-end latency**, **Y tokens per query**, and citation/refusal correctness across a reproducible evaluation suite.
+
+## Final verdict
+
+IndexFlow is now a **very strong AI Engineering project**. The retrieval implementation is effectively complete. The remaining work is focused:
+
+1. Add benchmark denominators and additional retrieval metrics.
+2. Analyze why reranking regressed.
+3. Expand three security checks into a fixed 30–50-case adversarial suite.
+4. Report authorized-query success alongside leakage resistance.
+5. Complete OpenTelemetry latency and token measurements.
+
