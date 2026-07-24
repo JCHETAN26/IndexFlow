@@ -133,7 +133,7 @@ async function main() {
         if (answer) {
           for await (const ev of answer) {
             if (ev.type === "delta") text += ev.text;
-            if (ev.type === "finish") { inT = ev.promptTokens || 0; outT = ev.completionTokens || 0; }
+            if (ev.type === "done") { inT = ev.promptTokens || 0; outT = ev.completionTokens || 0; }
           }
         }
         retrievalLatencies.push(retrievalMs);
