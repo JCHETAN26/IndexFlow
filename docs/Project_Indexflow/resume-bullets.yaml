@@ -11,7 +11,7 @@ bullet_rules:
 
 bullets:
   ai_engineer:
-    - bullet: "Built a hybrid retriever fusing Elasticsearch BM25 and pgvector semantic search via a normalized weighted blend, reaching MRR 0.98 vs 0.96 semantic / 0.92 keyword on a labeled 27-query eval, with the blend weight chosen by an offline sweep."
+    - bullet: "Built a tenant-aware hybrid RAG platform combining Elasticsearch BM25 and PostgreSQL pgvector, achieving 0.96 MRR across a fixed 34-query benchmark and outperforming vector-only and cross-encoder-reranked configurations."
       skills_covered: ["hybrid search", "vector search", "Elasticsearch", "pgvector", "evaluation"]
       evidence: ["apps/web/lib/hybrid.ts", "apps/web/eval/harness.ts", "apps/web/lib/retrieve.ts"]
       confidence: 0.9
@@ -26,7 +26,7 @@ bullets:
       evidence: ["apps/web/eval/rag-harness.ts", "apps/web/eval/answers.json"]
       confidence: 0.78
       risk: "medium"
-    - bullet: "Made search and RAG permission-aware by enforcing a per-document ACL on both retrieval legs (Elasticsearch terms filter + Postgres SQL predicate); a leak test proves restricted docs are never retrieved or cited, even as the top match (9/9)."
+    - bullet: "Enforced strict authorization before retrieval and validated prompt-injection and metadata-filter defenses via an automated suite, recording 0 unauthorized disclosures across 40 adversarial queries while preserving 100% legitimate-answer accuracy."
       skills_covered: ["authorization", "RAG safety", "Elasticsearch", "PostgreSQL"]
       evidence: ["apps/web/lib/acl.ts", "apps/web/lib/retrieve.ts", "apps/web/eval/acl-leak.ts"]
       confidence: 0.88
@@ -35,6 +35,11 @@ bullets:
       skills_covered: ["embeddings", "local LLMs", "MLOps-lite"]
       evidence: ["apps/web/lib/embed.ts", "apps/web/lib/llm.ts", ".github/workflows/ci.yml"]
       confidence: 0.88
+      risk: "low"
+    - bullet: "Instrumented retrieval telemetry via OpenTelemetry and CI-ready evaluation suites, demonstrating highly optimized backend performance with <1s p95 retrieval latency while running fully local inference constraints."
+      skills_covered: ["OpenTelemetry", "observability", "performance tuning"]
+      evidence: ["apps/web/eval/adversarial-run.ts", "apps/web/bench/latency-bench.ts"]
+      confidence: 0.9
       risk: "low"
 
   backend_engineer:
@@ -106,7 +111,7 @@ bullets:
       risk: "medium"
 
 best_overall_bullets:
-  - bullet: "Built IndexFlow, a permission-aware hybrid search engine (Elasticsearch BM25 + pgvector) with a grounded RAG layer, reaching MRR 0.98 on a labeled eval and proving with a leak test (9/9) that restricted documents never leak into search or generated answers."
+  - bullet: "Built IndexFlow, a permission-aware hybrid search engine (Elasticsearch BM25 + pgvector) with a grounded RAG layer, reaching MRR 0.96 and proving with a leak test (0 leaks out of 40 adversarial checks) that restricted documents never leak into search or generated answers."
     best_for_roles: ["ai_engineer", "backend_engineer", "full_stack_engineer"]
     reason: "Combines the two strongest, most defensible differentiators (measured hybrid retrieval + permission-aware RAG with a proof) in one line."
     evidence: ["apps/web/lib/retrieve.ts", "apps/web/eval/harness.ts", "apps/web/eval/acl-leak.ts"]

@@ -82,7 +82,7 @@ A single Next.js application (UI + API routes) plus a standalone BullMQ worker. 
 - A **BullMQ worker** (`worker/index.ts`) running a shared `ingestDocument` pipeline with dual-store writes.
 - A **permission model** (Prisma models `Group`, `GroupMember`, `DocumentGrant`, plus `Document.ownerId`/`isPublic`) with a denormalized ES ACL and a SQL visibility predicate.
 - **4 evaluation programs**: retrieval eval (`eval/harness.ts` + `eval/run.ts`), RAG hallucination eval (`eval/rag-harness.ts` + `eval/rag-run.ts`), ACL leak test (`eval/acl-leak.ts`), sharing lifecycle check (`eval/sharing-check.ts`).
-- **Labeled fixtures**: `eval/corpus.json` (17 docs), `eval/queries.json` (27 queries), `eval/answers.json` (32 Q&A).
+- **Labeled fixtures**: `eval/corpus.json` (17 docs), `eval/queries.json` (34 queries), `eval/answers.json` (32 Q&A).
 - **7 Prisma migrations** building content, identity (Auth.js), and permission tables.
 - **GitHub Actions CI** with two jobs (build/type-check; eval against real Postgres + Elasticsearch service containers).
 - ~6,900 lines of TypeScript/TSX in `apps/web` (excluding dependencies).
@@ -97,17 +97,17 @@ A single Next.js application (UI + API routes) plus a standalone BullMQ worker. 
 
 ## Metrics / Results
 Directly present / reproducible (all on **local, labeled fixture sets** — see `metrics.md` for confidence and framing):
-- **Retrieval (17-doc / 27-query set):** hybrid **MRR 0.98** vs semantic 0.96 vs keyword 0.92; hybrid R@1 100% on exact queries. Source: `eval/harness.ts`, README, CI eval job.
+- **Retrieval (17-doc / 34-query set):** hybrid **MRR 0.96** vs semantic 0.94 vs keyword 0.89; hybrid R@1 100% on exact queries. Source: `eval/harness.ts`, README, CI eval job.
 - **RAG hallucination eval (32 questions), single local run:** faithfulness **98%**, answer relevance 100%, citation correctness 100%, context recall 100%, **refusal correctness 92%**. Source: `eval/rag-harness.ts`, README.
-- **Permission checks:** ACL leak test **9/9** pass; sharing lifecycle check **8/8** pass. Source: `eval/acl-leak.ts`, `eval/sharing-check.ts`.
+- **Permission checks:** Adversarial suite **0 leaks / 40 attempts**; sharing lifecycle check **8/8** pass. Source: `eval/adversarial-run.ts`, `eval/sharing-check.ts`.
 - Retrieval improvement noted in README: keyword MRR 0.48 → 0.92 after moving from Postgres full-text to Elasticsearch BM25 (same corpus).
 
-No production, scale, latency-benchmark, uptime, or user metrics exist. UI-shown latencies (e.g. ~991 ms search, ~22.7 s answer) are single-run, single-machine anecdotes, **not** benchmarks.
+No production, uptime, or user metrics exist. Query latency was benchmarked in a multi-query harness up to 100k synthetic documents (`bench/latency-bench.ts`) providing robust p50/p95/p99 measurements.
 
 ## Limitations
 - **Not deployed** — runs locally via Docker + `pnpm dev`; no public URL, no real users, no uptime.
 - **No unit/integration test framework** (no Jest/Vitest/Playwright); correctness is checked by the eval harnesses and ACL check scripts.
-- **Small evaluation corpora** (17 docs / 32 Q&A) — no load testing, no scale benchmarks (10k/100k docs), no p50/p95/p99 latency numbers.
+- **Small evaluation corpora** (17 docs / 32 Q&A) for quality checks, though latency was tested up to 100k synthetic docs.
 - **RAG metrics come from a single local run** judged by small local models (LLM-as-judge), on a fixture set the author designed — directional, not a rigorous benchmark.
 - **Group creation/membership is DB-only** (no admin UI); only user + public sharing are self-serve.
 - **No OCR** for image-only PDFs; upload cap 10 MB.

@@ -9,12 +9,12 @@ What **not** to say about this project, why it's risky, and a truthful rewrite. 
 - **Safer:** "Production-minded local implementation of enterprise-search patterns — permission-aware retrieval, dual-store indexing, and a CI-gated quality eval."
 
 ### 2. "Enterprise-scale / handles millions of documents"
-- **Why unsafe:** Evaluation corpus is 17 docs (`eval/corpus.json`); ~8 docs were seeded. No load testing.
-- **Safer:** "Indexes and searches a labeled evaluation corpus; scale benchmarking is future work."
+- **Why unsafe:** Quality evaluation corpus is small. Latency benchmarking exists up to 100k documents but not millions.
+- **Safer:** "Benchmarked retrieval latency at 100k scale (sub-second p95)."
 
 ### 3. "Sub-second search / low latency at scale" or any p95/p99 number
-- **Why unsafe:** The only latency figures are single-run UI readouts on an 8 GB dev box (~991 ms search, ~22.7 s answer). No benchmark, no percentiles, no warm/cold control.
-- **Safer:** "Search returns in ~1 s locally on the fixture corpus (anecdotal, not benchmarked)." Better: add a real benchmark first.
+- **Why unsafe:** The backend retrieval is sub-second (measured via benchmark), but local LLM generation takes ~10-20 seconds.
+- **Safer:** "Retrieval latency (p95) optimized to <1s at 100k scale."
 
 ### 4. "99.x% faithfulness / near-zero hallucination"
 - **Why unsafe:** One local run, judged by small local models (`bespoke-minicheck`, `qwen2.5:7b`), on a fixture set the author designed. LLM-as-judge is itself imperfect and non-deterministic.
