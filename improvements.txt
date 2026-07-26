@@ -1,0 +1,58 @@
+IndexFlow implementation sequence
+Phase IF-0 — Security blocker
+Protect file download.
+Require authentication for mutations.
+Remove anonymous upload and delete behaviour.
+Add central document authorisation.
+Add database constraint enforcing exactly one grant principal.
+Add direct-object-access security tests.
+
+Exit: zero unauthorised disclosures across file, search, RAG, list, and citation surfaces.
+
+Phase IF-1 — Cross-store reliability
+Introduce transactional outbox.
+Add ACL and content versions.
+Build idempotent Elasticsearch projector.
+Reapply ACL during final hydration.
+Add reconciliation worker.
+Correct ingestion state transitions.
+
+Exit: forced Elasticsearch failures cannot leak revoked content or leave documents incorrectly marked ready.
+
+Phase IF-2 — Testing and CI
+Vitest unit suite.
+PostgreSQL/Redis/Elasticsearch/MinIO integration suite.
+Playwright principal workflow.
+Security regression suite.
+CodeQL and dependency review.
+Container build checks.
+
+Exit: every security and consistency failure above is represented by a test that would have caught it.
+
+Phase IF-3 — Evaluation credibility
+Separate tuning and held-out test sets.
+Expand corpora and queries.
+Add confidence intervals.
+Calibrate LLM judges against human labels.
+Version datasets and configurations.
+Generate one canonical metrics artefact consumed by README and UI.
+
+Exit: no conflicting metrics; all resume figures derive automatically from the frozen test report.
+
+Phase IF-4 — Deployment and operations
+Containerise web and worker.
+Add staging and production environments.
+Add OpenTelemetry exporter and dashboards.
+Add rate limits, quotas, retention, and cost telemetry.
+Add deployment smoke tests and rollback.
+
+Exit: a public seeded demo works without exposing unrestricted model or storage usage.
+
+Phase IF-5 — Product completion
+Exact source-passage viewer.
+Group administration.
+source versioning and re-index history.
+failure/retry UI.
+architecture decision records.
+incident postmortem.
+recorded deterministic demo.

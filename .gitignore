@@ -25,3 +25,9 @@ apps/web/prisma/*.db
 coverage/
 .gstack/
 *.tsbuildinfo
+
+# eval scratch output (canonical results live in apps/web/eval/RESULTS.md)
+.evalrun/
+
+# personal job-prep notes — never commit
+docs/Project_Indexflow/
