@@ -4,6 +4,7 @@ import { HL_START, HL_END } from "@/lib/es";
 import { fetchKeyword, fetchSemantic, toScored, type Candidate } from "@/lib/retrieve";
 import { auth } from "@/auth";
 import { viewerFrom, type Viewer } from "@/lib/acl";
+import { LIMITS, callerKey, checkRateLimit, rateLimitHeaders, tooManyRequests } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 
@@ -97,6 +98,11 @@ export async function GET(req: NextRequest) {
   // Permission-aware: retrieval only ever returns chunks this viewer can see. An
   // unauthenticated request resolves to a public-only viewer.
   const session = await auth();
+
+  // Every query embeds the text, so this is not free. Limit per caller.
+  const rl = checkRateLimit(`search:${callerKey(req, session?.user?.id ?? null)}`, LIMITS.search);
+  if (!rl.ok) return tooManyRequests(rl, "Too many searches. Please slow down.");
+
   const viewer = await viewerFrom(session?.user?.id ?? null);
 
   const started = performance.now();
@@ -110,5 +116,5 @@ export async function GET(req: NextRequest) {
   }
   const latencyMs = Math.round(performance.now() - started);
 
-  return NextResponse.json({ query: q, mode, latencyMs, results });
+  return NextResponse.json({ query: q, mode, latencyMs, results }, { headers: rateLimitHeaders(rl) });
 }

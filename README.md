@@ -121,9 +121,13 @@ performance.
 - **The generator is a 3B model** over 6 contexts. A larger model would score differently.
 - **Gate floors are calibrated just under the first real run**, so passing means "has not
   regressed", not "meets an external bar".
-- **Not production-hardened.** Single-node everything, no rate limits or quotas, no cross-store
-  transactional consistency — an Elasticsearch write failure during ingestion can leave a document
-  marked indexed with no keyword-leg presence. Tracked in `improvements.txt`.
+- **Not production-hardened.** Single-node everything, and no cross-store transactional
+  consistency — an Elasticsearch write failure during ingestion can leave a document marked
+  indexed with no keyword-leg presence. Tracked in `improvements.txt`.
+- **Rate limiting is in-memory**, so limits are per process and reset on restart. It stops
+  accidental hammering and casual abuse of the expensive evaluation endpoints, not a distributed
+  attacker; real protection belongs at the edge. The one-at-a-time concurrency cap on the eval
+  endpoints is the part that actually protects the host.
 - **One known telemetry bug:** the adversarial eval reports `Average input tokens: 0`, which is a
   defect in the harness, not a measurement.
 

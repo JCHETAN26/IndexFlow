@@ -11,6 +11,7 @@ import {
   getOrCreateDemoUser,
   isValidSeedToken,
 } from "@/lib/demo";
+import { LIMITS, callerKey, checkRateLimit, tooManyRequests } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 
@@ -39,6 +40,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Sign in to upload documents." }, { status: 401 });
   } else if (DEMO_MODE) {
     return NextResponse.json(demoReadOnlyResponse, { status: 403 });
+  }
+
+  // Writes cost storage plus a queued ingestion job. The seed script is exempt — it uploads the
+  // whole corpus in one burst by design.
+  if (!seeding) {
+    const rl = checkRateLimit(`upload:${callerKey(req, ownerId)}`, LIMITS.upload);
+    if (!rl.ok) return tooManyRequests(rl, "Upload limit reached. Please try again later.");
   }
 
   let form: FormData;

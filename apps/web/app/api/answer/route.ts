@@ -5,6 +5,7 @@ import { REFUSAL_SENTENCE } from "@/lib/llm";
 import { auth } from "@/auth";
 import { viewerFrom } from "@/lib/acl";
 import { DEMO_MODE } from "@/lib/demo";
+import { LIMITS, callerKey, checkRateLimit, tooManyRequests } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -27,6 +28,12 @@ export async function POST(req: NextRequest) {
   // Permission-aware: the answer is grounded only in documents this viewer can see, so a
   // restricted document can never be retrieved, cited, or paraphrased into the answer.
   const session = await auth();
+
+  // Retrieval plus (locally) generation — the most expensive per-request path a visitor can
+  // reach. Checked before any work starts.
+  const rl = checkRateLimit(`answer:${callerKey(req, session?.user?.id ?? null)}`, LIMITS.answer);
+  if (!rl.ok) return tooManyRequests(rl, "Too many questions. Please slow down.");
+
   const viewer = await viewerFrom(session?.user?.id ?? null);
 
   const encoder = new TextEncoder();
