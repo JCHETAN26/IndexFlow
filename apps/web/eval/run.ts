@@ -15,7 +15,16 @@ const f2 = (n: number) => n.toFixed(2);
 function print(r: EvalReport) {
   const strategies = ["keyword", "semantic", "hybrid", "hybrid+rerank"] as const;
 
+  const iv = (i: { value: number; lo: number; hi: number }) =>
+    `${pct(i.value).trim()} [${pct(i.lo).trim()}–${pct(i.hi).trim()}]`;
+
   console.log(`\nRetrieval eval — ${r.numQueries} queries over ${r.numDocs} docs`);
+  console.log(
+    `* Dataset ${r.dataset.version} (queries ${r.dataset.queriesSha}, corpus ${r.dataset.corpusSha})`,
+  );
+  console.log(
+    `* Split: ${r.dataset.numTune} tuning (weight chosen here) / ${r.dataset.numTest} held-out (reported below)`,
+  );
   // Read the model names from the code that actually runs, never a hardcoded string —
   // a stale literal here silently mislabels every captured result.
   console.log(`* Chunking: semantic chunker`);
@@ -33,7 +42,11 @@ function print(r: EvalReport) {
     console.log(`${s.padEnd(15)}  ${f2(m.mrr)}   ${row}`);
   }
   console.log("─".repeat(80));
-  console.log("by query kind (R@1 / MRR):");
+  console.log("held-out hybrid, with 95% bootstrap intervals:");
+  console.log(`  MRR  ${iv(r.ci.hybridMrr)}     R@1  ${iv(r.ci.hybridR1)}     R@5  ${iv(r.ci.hybridR5)}`);
+  console.log("  (intervals this wide on a set this size mean small gaps are not rankings)");
+  console.log("─".repeat(80));
+  console.log("by query kind (R@1 / MRR), whole set:");
   console.log("            keyword        semantic       hybrid         hybrid+rerank");
   for (const kind of ["exact", "paraphrase"] as const) {
     const cells = strategies
@@ -42,7 +55,7 @@ function print(r: EvalReport) {
     console.log(`${kind.padEnd(12)}${cells}`);
   }
   console.log("─".repeat(80));
-  console.log(`hybrid weight sweep (keyword weight → MRR), best = ${f2(r.hybridWeight)}:`);
+  console.log(`hybrid weight sweep on the TUNING split (keyword weight → MRR), best = ${f2(r.hybridWeight)}:`);
   console.log(
     r.sweep.map((s) => `${f2(s.weight)}:${f2(s.mrr)}${s.weight === r.hybridWeight ? "*" : " "}`).join("  "),
   );
