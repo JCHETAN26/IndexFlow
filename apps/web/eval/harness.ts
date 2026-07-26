@@ -255,6 +255,7 @@ export async function runEvaluation(): Promise<EvalReport> {
       chunks.push({ fileName: doc.fileName, chunkId: randomUUID(), index: c.index, content: c.content, tokenCount: c.tokenCount });
     }
   }
+  const chunkById = new Map(chunks.map((c) => [c.chunkId, c]));
 
   const chunkVecs = await embed(chunks.map((c) => c.content));
   const queryVecs = await embed(queries.map((q) => q.q));
@@ -391,7 +392,13 @@ export async function runEvaluation(): Promise<EvalReport> {
     for (const c of [...q.kw, ...q.sm]) {
       chunkToDoc.set(c.chunkId, c.docId);
       if (topBlendedIds.has(c.chunkId) && !seen.has(c.chunkId)) {
-        candidatesForRerank.push({ ...c, title: "", fileType: "md", snippet: c.snippet ?? "" });
+        candidatesForRerank.push({
+          ...c,
+          title: "",
+          fileType: "md",
+          snippet: c.snippet ?? "",
+          content: chunkById.get(c.chunkId)?.content ?? c.snippet ?? "",
+        });
         seen.add(c.chunkId);
       }
     }

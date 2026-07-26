@@ -5,7 +5,7 @@ import { blendHybrid, DEFAULT_HYBRID_WEIGHT, type Scored } from "@/lib/hybrid";
 import { keywordSearch } from "@/lib/es";
 import type { Viewer } from "@/lib/acl";
 import { trace } from "@opentelemetry/api";
-import { rerank } from "./rerank";
+import { rerank, type RerankCandidate } from "./rerank";
 
 const tracer = trace.getTracer("indexflow-web");
 
@@ -165,9 +165,23 @@ export async function retrieveContexts(
             seen.add(c.chunkId);
           }
         }
+
+        const candidateIds = candidatesForRerank.map((c) => c.chunkId);
+        const fullRows =
+          candidateIds.length === 0
+            ? []
+            : await prisma.documentChunk.findMany({
+                where: { id: { in: candidateIds } },
+                select: { id: true, content: true },
+              });
+        const contentById = new Map(fullRows.map((r) => [r.id, r.content]));
+        const fullCandidates: RerankCandidate[] = candidatesForRerank.map((c) => ({
+          ...c,
+          content: contentById.get(c.chunkId) ?? c.snippet,
+        }));
         
         const reranked = await tracer.startActiveSpan("rerank", async (rSpan) => {
-          const res = await rerank(query, candidatesForRerank);
+          const res = await rerank(query, fullCandidates);
           rSpan.end();
           return res;
         });

@@ -99,6 +99,11 @@ quality gate:
 Quality gate passed. ✓
 ```
 
+> **Historical reranker caveat:** this captured `hybrid+rerank` run used an earlier
+> text-classification pipeline wrapper that did not pass query/passage pairs correctly. The code
+> now uses `AutoTokenizer` + `AutoModelForSequenceClassification` with `text_pair` and full chunk
+> content. Re-run `pnpm --filter @indexflow/web eval` before quoting reranker quality.
+
 ### What changed, and why the headline claim did not survive
 
 **Hybrid does not beat both single strategies on held-out data.** Semantic alone scores MRR

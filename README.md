@@ -109,10 +109,10 @@ the selection criterion moved it 0.86 → 0.85, so this is not an artifact of ho
 picked. Reasoning in `RESULTS.md`. Note the interval: 0.85 [0.75–0.94] — gaps of a few points on
 34 queries are noise, not a ranking.
 
-**Reranking is off, because it made things worse.** A `bge-reranker-base` cross-encoder pass over
-the blended top-10 scores **MRR 0.73 against plain hybrid's 0.85**, demoting the correct document
-on 13 of 64 queries. It stays in the eval as a measured negative result rather than being quietly
-deleted.
+**Reranking is implemented but off by default.** The captured run reports `hybrid+rerank` at MRR
+0.73, below plain hybrid's 0.85, but that run used an earlier pipeline wrapper that did not pass
+query/passage pairs correctly. The code now uses a sequence-classification cross-encoder with
+`text_pair`; re-run `pnpm --filter @indexflow/web eval` before quoting reranker quality.
 
 ## Limitations
 
