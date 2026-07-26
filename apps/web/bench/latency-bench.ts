@@ -20,7 +20,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { PrismaClient } from "@prisma/client";
 import { blendHybrid, DEFAULT_HYBRID_WEIGHT, type Scored } from "../lib/hybrid";
 import {
@@ -234,7 +234,9 @@ async function main() {
     console.log("");
   }
 
-  // ---- write a committable markdown artifact ----
+  // ---- write a scratch markdown artifact ----
+  // NOT committed. eval/RESULTS.md is the single source of truth for every published number;
+  // this file is a convenience copy for pasting a fresh run into it. See eval/RESULTS.md.
   const lines: string[] = [];
   lines.push("# Retrieval latency & scale benchmark\n");
   lines.push(
@@ -261,9 +263,12 @@ async function main() {
     );
   }
   lines.push("");
-  const outPath = new URL("./RESULTS.md", import.meta.url).pathname;
+  const outDir = new URL("../../../.evalrun/", import.meta.url).pathname;
+  mkdirSync(outDir, { recursive: true });
+  const outPath = `${outDir}bench-latency.md`;
   writeFileSync(outPath, lines.join("\n"));
-  console.log(`results written to ${outPath}`);
+  console.log(`scratch copy written to ${outPath}`);
+  console.log(`to publish these numbers, paste the output above into apps/web/eval/RESULTS.md`);
 }
 
 main()

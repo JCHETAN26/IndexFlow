@@ -5,6 +5,8 @@
  * Run: pnpm --filter @indexflow/web eval
  */
 import { prisma } from "../lib/prisma";
+import { EMBED_DIM, EMBED_MODEL } from "../lib/embed";
+import { RERANK_MODEL } from "../lib/rerank";
 import { runEvaluation, type EvalReport } from "./harness";
 
 const pct = (n: number) => (n * 100).toFixed(0).padStart(3) + "%";
@@ -14,9 +16,11 @@ function print(r: EvalReport) {
   const strategies = ["keyword", "semantic", "hybrid", "hybrid+rerank"] as const;
 
   console.log(`\nRetrieval eval — ${r.numQueries} queries over ${r.numDocs} docs`);
+  // Read the model names from the code that actually runs, never a hardcoded string —
+  // a stale literal here silently mislabels every captured result.
   console.log(`* Chunking: semantic chunker`);
-  console.log(`* Embedding: Xenova/bge-base-en-v1.5`);
-  console.log(`* Reranker: Xenova/bge-reranker-base`);
+  console.log(`* Embedding: ${EMBED_MODEL} (${EMBED_DIM}-dim)`);
+  console.log(`* Reranker: ${RERANK_MODEL}`);
   console.log(`* Initial retrieval: 10 chunks per strategy`);
   console.log(`* Reranker input: Top 10 blended chunks`);
   

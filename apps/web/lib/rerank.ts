@@ -8,6 +8,8 @@ import type { Candidate } from "./retrieve";
  * which is why we only run them on the top-k retrieved chunks.
  */
 
+export const RERANK_MODEL = "Xenova/bge-reranker-base";
+
 // Global cache for the pipeline so it's loaded only once per worker/process.
 let rerankerPipeline: any = null;
 
@@ -19,7 +21,7 @@ async function getReranker() {
     // bge-reranker-base is supported via text-classification or custom pipeline.
     // Since transformers.js v3 is still in beta, and v2 handles text-classification, 
     // we use a generic sequence classification approach if needed, or if supported natively:
-    rerankerPipeline = await pipeline("text-classification", "Xenova/bge-reranker-base");
+    rerankerPipeline = await pipeline("text-classification", RERANK_MODEL);
   }
   return rerankerPipeline;
 }
