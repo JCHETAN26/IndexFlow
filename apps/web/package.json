@@ -15,6 +15,7 @@
     "eval:rag": "tsx --env-file=.env eval/rag-run.ts",
     "eval:adversarial": "tsx --env-file=.env eval/adversarial-run.ts",
     "acl:leak": "tsx --env-file=.env eval/acl-leak.ts",
+    "acl:dao": "tsx --env-file=.env eval/dao-check.ts",
     "acl:sharing": "tsx --env-file=.env eval/sharing-check.ts",
     "bench:latency": "tsx --env-file=.env bench/latency-bench.ts",
     "worker": "tsx --env-file=.env worker/index.ts",

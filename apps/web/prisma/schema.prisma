@@ -147,6 +147,9 @@ model GroupMember {
 // One access grant on a document to exactly one principal — either a user
 // (`userId`) or a group (`groupId`). Ownership and `isPublic` are handled on the
 // Document itself; this table holds explicit shares beyond those.
+// A grant targets exactly one principal — a user OR a group. Prisma cannot express that, so it
+// is enforced by the CHECK constraint `document_grants_exactly_one_principal` (migration
+// 20260726020000). Both-null grants nothing; both-set silently widens access in lib/acl aclTokens.
 model DocumentGrant {
   id         String  @id @default(uuid()) @db.Uuid
   documentId String  @map("document_id") @db.Uuid

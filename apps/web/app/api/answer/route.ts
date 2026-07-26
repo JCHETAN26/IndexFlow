@@ -1,8 +1,10 @@
 import { NextRequest } from "next/server";
-import { answerQuestion } from "@/lib/rag";
+import { answerQuestion, RAG_K } from "@/lib/rag";
+import { retrieveContexts } from "@/lib/retrieve";
 import { REFUSAL_SENTENCE } from "@/lib/llm";
 import { auth } from "@/auth";
 import { viewerFrom } from "@/lib/acl";
+import { DEMO_MODE } from "@/lib/demo";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -45,6 +47,33 @@ export async function POST(req: NextRequest) {
       };
 
       try {
+        // Public demo: there is no Ollama on the host, so retrieval still runs for real (the
+        // citations below are genuine, permission-filtered hits) but generation is replaced by
+        // an explanation rather than a broken stream or a fabricated answer.
+        if (DEMO_MODE) {
+          const contexts = await retrieveContexts(query, RAG_K, viewer);
+          send({
+            type: "contexts",
+            contexts: contexts.map((c) => ({
+              marker: c.marker,
+              chunkId: c.chunkId,
+              documentId: c.documentId,
+              title: c.title,
+              fileType: c.fileType,
+            })),
+          });
+          send({
+            type: "delta",
+            text:
+              contexts.length > 0
+                ? `Answer generation is disabled in this public demo — it runs on a local Ollama model that isn't available on the host. Retrieval is live: the ${contexts.length} passage(s) cited below are real, permission-filtered results for your query. Run the project locally to see grounded answers with citations.`
+                : "Answer generation is disabled in this public demo, and retrieval found no matching passages for this query.",
+          });
+          send({ type: "done", refused: false, usage: null });
+          controller.close();
+          return;
+        }
+
         const { contexts, answer } = await answerQuestion(query, viewer);
         send({
           type: "contexts",

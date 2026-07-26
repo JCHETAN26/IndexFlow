@@ -67,6 +67,41 @@ export function documentVisibilityWhere(viewer: Viewer): Prisma.DocumentWhereInp
   };
 }
 
+/**
+ * The single read-authorization gate for a specific document.
+ *
+ * Retrieval filters visibility *in the query* (ES `terms`, SQL predicate), which covers search
+ * and RAG. Anything that reaches a document by id instead — file download, metadata by id — has
+ * no such filter and MUST call this. It is built on `documentVisibilityWhere`, so this gate and
+ * the list/search surfaces can never drift apart: one rule, one place.
+ */
+export async function canReadDocument(viewer: Viewer, documentId: string): Promise<boolean> {
+  const hit = await prisma.document.findFirst({
+    where: { AND: [{ id: documentId }, documentVisibilityWhere(viewer)] },
+    select: { id: true },
+  });
+  return hit !== null;
+}
+
+/** Thrown by the assert helpers below; carries the HTTP status a route should return. */
+export class AccessError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "AccessError";
+  }
+}
+
+/**
+ * Assert the viewer may read the document, else throw a 404 — deliberately NOT 403.
+ * A 403 on an existing-but-forbidden document confirms the document exists, which leaks
+ * membership of the corpus to anyone probing ids. Unreadable and absent look identical.
+ */
+export async function assertCanRead(viewer: Viewer, documentId: string): Promise<void> {
+  if (!(await canReadDocument(viewer, documentId))) {
+    throw new AccessError(404, "Document not found.");
+  }
+}
+
 /** The minimal document shape needed to compute its ACL tokens for indexing. */
 export interface AclDocument {
   isPublic: boolean;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { assertOwner, getSharing, setPublic, addGrant, removeGrant, SharingError } from "@/lib/sharing";
+import { DEMO_MODE, demoReadOnlyResponse } from "@/lib/demo";
 
 export const runtime = "nodejs";
 
@@ -20,6 +21,11 @@ function fail(e: unknown): NextResponse {
   throw e; // unexpected → 500 via the framework
 }
 
+/** Read-only public demo: refuse every sharing mutation. GET (reading state) stays allowed. */
+function demoBlocked(): NextResponse | null {
+  return DEMO_MODE ? NextResponse.json(demoReadOnlyResponse, { status: 403 }) : null;
+}
+
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
@@ -32,6 +38,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const blocked = demoBlocked();
+  if (blocked) return blocked;
   const body = (await req.json().catch(() => ({}))) as { isPublic?: unknown };
   try {
     await assertOwner(id, await currentUserId());
@@ -43,6 +51,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const blocked = demoBlocked();
+  if (blocked) return blocked;
   const body = (await req.json().catch(() => ({}))) as { email?: string; groupName?: string };
   try {
     await assertOwner(id, await currentUserId());
@@ -54,6 +64,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const blocked = demoBlocked();
+  if (blocked) return blocked;
   const grantId = req.nextUrl.searchParams.get("grantId");
   try {
     await assertOwner(id, await currentUserId());

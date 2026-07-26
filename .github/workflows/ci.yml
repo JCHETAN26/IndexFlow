@@ -103,3 +103,8 @@ jobs:
 
       - name: Run retrieval evaluation (quality gate)
         run: pnpm --filter @indexflow/web eval
+
+      # Security regression gate. Needs only Postgres; the live-HTTP layer skips itself when no
+      # server is running, and the authorization gate it checks is the part that must not regress.
+      - name: Run direct-object-access checks
+        run: pnpm --filter @indexflow/web acl:dao
