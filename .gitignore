@@ -31,3 +31,8 @@ coverage/
 
 # personal job-prep notes — never commit
 docs/Project_Indexflow/
+
+# playwright
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/

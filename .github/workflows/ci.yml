@@ -194,3 +194,20 @@ jobs:
       # that actually shipped, so a red test here means a real vulnerability came back.
       - name: Run integration tests
         run: pnpm --filter @indexflow/web test:integration
+
+      - name: Install Playwright browser
+        run: pnpm --filter @indexflow/web exec playwright install chromium --with-deps
+
+      # The principal workflow in a real browser: middleware, session cookies, API routes and UI
+      # all have to agree. Playwright builds and starts the app itself (see playwright.config.ts).
+      - name: Run end-to-end tests
+        run: pnpm --filter @indexflow/web test:e2e
+        env:
+          AUTH_SECRET: e2e-only-not-a-real-secret
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
