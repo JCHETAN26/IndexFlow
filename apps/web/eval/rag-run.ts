@@ -7,6 +7,7 @@
  * (models are loaded one at a time; see rag-harness.ts), so it is NOT wired into CI.
  * Run: pnpm --filter @indexflow/web eval:rag   [EVAL_LIMIT=6 for a quick subset]
  */
+import { mkdirSync, writeFileSync } from "node:fs";
 import { prisma } from "../lib/prisma";
 import { runRagEvaluation, type RagReport } from "./rag-harness";
 
@@ -58,9 +59,24 @@ function print(r: RagReport) {
   }
 }
 
+/**
+ * Persist the full report. The generation eval takes ~30 minutes, so anything that wants to
+ * inspect its output afterwards — the judge-calibration export, in particular — must be able to
+ * read a saved run rather than trigger another one.
+ */
+function persist(report: RagReport) {
+  const dir = process.env.EVAL_RUN_DIR ?? new URL("../../../.evalrun", import.meta.url).pathname;
+  mkdirSync(dir, { recursive: true });
+  const path = `${dir}/rag-report.json`;
+  writeFileSync(path, JSON.stringify({ generatedAt: new Date().toISOString(), ...report }, null, 2));
+  console.log(`\nfull report saved to ${path}`);
+  console.log("→ build a blind audit sheet from it with: pnpm --filter @indexflow/web judge:export");
+}
+
 runRagEvaluation()
   .then(async (report) => {
     print(report);
+    persist(report);
     await prisma.$disconnect();
     if (report.passed) {
       console.log("\nGeneration quality gate passed. ✓");

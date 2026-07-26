@@ -26,9 +26,13 @@
     "acl:sharing": "tsx --env-file=.env eval/sharing-check.ts",
     "bench:latency": "tsx --env-file=.env bench/latency-bench.ts",
     "worker": "tsx --env-file=.env worker/index.ts",
+    "smoke:deploy": "tsx --env-file=.env scripts/smoke.ts",
+    "retention:cleanup": "tsx --env-file=.env scripts/retention-cleanup.ts",
     "postinstall": "prisma generate",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "judge:export": "tsx --env-file=.env eval/export-labels.ts",
+    "judge:calibrate": "tsx --env-file=.env eval/calibrate-judges.ts"
   },
   "prisma": {
     "schema": "prisma/schema.prisma"

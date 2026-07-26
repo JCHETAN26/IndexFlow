@@ -1,4 +1,12 @@
 IndexFlow implementation sequence
+Status snapshot — 2026-07-26
+IF-0 complete.
+IF-1 complete.
+IF-2 complete for repo wiring: CI, unit/integration/e2e/security/eval gates, CodeQL, dependency review, and container build workflows exist.
+IF-3 complete except the human-labelled judge calibration run: export/scoring workflow exists, labels still pending.
+IF-4 implemented for containerization, smoke tests, rollback docs, rate limits, retention cleanup, usage telemetry, and basic OpenTelemetry; staging/production provisioning remains environment-specific.
+IF-5 implemented for exact passage viewer, group administration, source/re-index history, failed-job retry UI, ADRs, incident template, and deterministic demo docs.
+
 Phase IF-0 — Security blocker
 Protect file download.
 Require authentication for mutations.

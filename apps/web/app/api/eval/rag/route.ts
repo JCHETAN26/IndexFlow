@@ -11,6 +11,7 @@ import {
   tooManyRequests,
   tryAcquire,
 } from "@/lib/ratelimit";
+import { recordEvalRun } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
     const started = performance.now();
     const report = await runRagEvaluation();
     const tookMs = Math.round(performance.now() - started);
+    recordEvalRun();
     return NextResponse.json({ ...report, tookMs }, { headers: rateLimitHeaders(rl) });
   } catch (e) {
     console.error("rag eval failed", e);

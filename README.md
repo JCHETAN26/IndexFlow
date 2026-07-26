@@ -17,8 +17,8 @@ with you or a group you belong to, and that rule is enforced independently on *b
 legs rather than applied as a filter after the fact.
 
 The part worth looking at is the measurement. Retrieval quality, answer groundedness, permission
-leakage and latency each have a runnable eval with a pass/fail gate, run in CI on every pull
-request. All LLMs run locally through Ollama — no API keys.
+leakage and latency each have a runnable eval with a pass/fail gate. All LLMs run locally through
+Ollama — no API keys.
 
 ![Search with grounded answer](docs/screenshots/search-answer.png)
 
@@ -88,7 +88,7 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 | What | Command | Result |
 |---|---|---|
 | Retrieval quality | `pnpm --filter @indexflow/web eval` | held-out: semantic **MRR 0.94**, hybrid 0.85, keyword 0.73 |
-| Answer groundedness | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%**, relevance 100%, citations 100%, refusal **92%** |
+| Answer groundedness | `pnpm --filter @indexflow/web eval:rag` | LLM-judged: faithfulness **98%**, relevance 100%, citations 100%, refusal **92%** |
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9** pass, no leaks across either leg |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** pass |
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** pass — by-id fetch/delete/upload and job listings are gated |
@@ -98,7 +98,8 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 
 Retrieval is measured on **34 held-out queries**; the blend weight is chosen on a separate
 30-query tuning split, so the numbers are not scored on the data that selected them. Generation
-uses 20 answerable + 12 unanswerable questions. 17 documents, 8 GB Mac, local Docker.
+uses 20 answerable + 12 unanswerable questions and is still waiting on a human audit of the
+LLM judges. 17 documents, 8 GB Mac, local Docker.
 
 **Hybrid does not beat both single strategies, and this README used to claim it did.** On held-out
 queries semantic alone leads (MRR 0.94 vs hybrid 0.85). Hybrid is best for *exact-match* queries
@@ -125,25 +126,31 @@ Evidence the system works on a small labelled fixture set, not production perfor
   test of paraphrase handling but it shifts the benchmark toward semantic retrieval, so these
   numbers are not comparable to the earlier ones.
 - **Three 100% scores mean "no failures at this size"**, not "solved". The generation eval's two
-  actual failures are printed in `RESULTS.md` rather than averaged away.
+  actual failures are printed in `RESULTS.md` rather than averaged away. The saved RAG report can
+  now be exported to a blind human audit sheet with `pnpm --filter @indexflow/web judge:export`,
+  then scored with `pnpm --filter @indexflow/web judge:calibrate`; no human labels have been
+  recorded yet.
 - **The latency benchmark uses synthetic vectors** and a fixed vocabulary. It measures latency,
   not quality, at scale. Its "index throughput" is bulk-load speed, not real ingestion.
 - **The generator is a 3B model** over 6 contexts. A larger model would score differently.
 - **Gate floors sit just under current numbers**, so a pass means "has not regressed", never
   "meets an external bar".
 - **Not production-hardened.** Single-node everything, and evaluation runs on local fixtures
-  rather than production traffic. Tested by 29 unit, 17 integration and 7 browser tests in CI.
+  rather than production traffic. CI covers build, unit, integration, Playwright, eval gates,
+  container builds, CodeQL, and dependency review.
 - **Rate limiting is in-memory**, so limits are per process and reset on restart. It stops
   accidental hammering, not a distributed attacker; real protection belongs at the edge. The
   one-at-a-time concurrency cap on the eval endpoints is what actually protects the host.
-- **One known telemetry bug:** the adversarial eval's `Average input tokens: 0` is a harness
-  defect, not a measurement.
+- **One historical telemetry caveat:** the captured adversarial run's `Average input tokens: 0`
+  was a harness defect. The code now records Ollama prompt tokens; re-run the benchmark before
+  quoting the input-token number.
 
 ## Layout
 
 ```
 apps/web/  app/ routes+UI · lib/ retrieve·hybrid·embed·es·acl·rag·outbox · eval/ harnesses
            + RESULTS.md (canonical numbers) · bench/ latency · worker/ ingestion + projector
+docs/      operations · ADRs · incident template · deterministic demo
 infra/     docker-compose + Dockerfile · improvements.txt: phased hardening roadmap
 ```
 

@@ -68,6 +68,10 @@ export interface RagItem {
   contextRecall: boolean | null; // answerable only: did retrieval surface a gold chunk?
   judge: JudgeResult;
   error?: boolean; // set when gen/judge failed for this item (isolated, not fatal)
+  /** Atomic claims minicheck graded. Needed to audit the judge per claim, not just per answer. */
+  claims?: string[];
+  /** The passages the judge saw. A human auditing a verdict needs exactly the same evidence. */
+  contextText?: string;
 }
 export interface RagReport {
   numAnswerable: number;
@@ -344,7 +348,15 @@ export async function runRagEvaluation(): Promise<RagReport> {
       refused,
       reasoning: w.rel.reasoning,
     };
-    return { q: w.p.q, answerable: w.p.answerable, answer: w.answer, contextRecall: w.p.contextRecall, judge: judged };
+    return {
+      q: w.p.q,
+      answerable: w.p.answerable,
+      answer: w.answer,
+      contextRecall: w.p.contextRecall,
+      judge: judged,
+      claims: w.claims,
+      contextText: w.contextText,
+    };
   });
 
   const answerable = items.filter((i) => i.answerable);

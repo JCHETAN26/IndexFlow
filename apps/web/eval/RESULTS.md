@@ -13,7 +13,7 @@ run on local Ollama — `llama3.2:3b` (generator), `qwen2.5:7b` (relevance/citat
 `bespoke-minicheck` (per-claim faithfulness). No API keys, no network calls.
 
 **To reproduce:** bring the stack up with `pnpm db:up`, ensure Ollama has the three models pulled,
-then run the six commands below in order. The generation eval takes ~30 minutes on this machine.
+then run the commands below in order. The generation eval takes ~30 minutes on this machine.
 
 ## Summary
 
@@ -24,7 +24,7 @@ then run the six commands below in order. The generation eval takes ~30 minutes 
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** | PASS |
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** | PASS |
 | Cross-store consistency | `pnpm --filter @indexflow/web consistency:check` | **8/8** | PASS |
-| Generation quality | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%**, refusal **92%** | PASS |
+| Generation quality | `pnpm --filter @indexflow/web eval:rag` | LLM-judged: faithfulness **98%**, refusal **92%** | PASS |
 | Adversarial security | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** disclosures, **0/10** injection leaks | PASS |
 | Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks | n/a |
 
@@ -328,6 +328,31 @@ failures are shown above rather than summarised away: one answer invented a `Ret
 behaviour the source did not state, and one question that should have been refused was answered.
 Three 100% scores on a 20-question set mean "no failures observed at this size", not "solved".
 
+### Human judge calibration
+
+The generation scores above are still model-graded: `bespoke-minicheck` grades per-claim
+faithfulness, and `qwen2.5:7b` grades relevance, citation correctness, and refusal behaviour. A
+blind human-audit workflow now exists, but no human labels have been recorded yet.
+
+After running `pnpm --filter @indexflow/web eval:rag`, the full report is saved to
+`.evalrun/rag-report.json`. Build the audit sheet with:
+
+```
+pnpm --filter @indexflow/web judge:export
+```
+
+That writes `.evalrun/judge-labels.csv` and a separate `.evalrun/judge-labels.key.json`. Fill in
+the CSV's `your_verdict` column without reading the key, then score agreement with:
+
+```
+pnpm --filter @indexflow/web judge:calibrate
+```
+
+The scorer reports raw agreement, Cohen's kappa, and lenient/strict disagreements overall and for
+each judge surface: faithfulness, answer relevance, citation correctness, and refusal. Until that
+audit is filled in, the generation metrics should be quoted as LLM-judged rather than
+human-calibrated.
+
 ## 5. Adversarial security
 
 ```
@@ -358,9 +383,10 @@ Observability (from 12 LLM runs):
 All adversarial benchmarks passed. ✓
 ```
 
-> **Known broken:** `Average input tokens: 0` is a telemetry defect in
-> `eval/adversarial-run.ts` — input tokens are never recorded. It is not a real measurement and
-> must not be quoted. Tracked as a follow-up.
+> **Historical telemetry caveat:** `Average input tokens: 0` in this captured run is a harness
+> defect, not a real measurement. The code now records Ollama `prompt_eval_count` on the answer
+> stream and consumes it in `eval/adversarial-run.ts`; re-run the benchmark before quoting that
+> number.
 
 This eval covers the *retrieval and generation* surfaces. It does **not** cover direct object
 access (fetching a document by URL); that gap is covered separately by `acl:dao`.
@@ -415,8 +441,8 @@ HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s a
 ## What these numbers do not say
 
 - **This is local-fixture evaluation, not production traffic.** 34 queries over 17 documents for
-  retrieval; 32 questions for generation. At that size a few points is noise — treat 0.96 vs 0.94
-  as "hybrid is at least as good", not as a precise ranking.
+  retrieval; 32 questions for generation. Retrieval has a proper tuning/held-out split. Generation
+  remains whole-set and LLM-judged until the human audit above is completed.
 - **The latency benchmark uses synthetic data**: random 384-dim unit vectors and text drawn from a
   fixed vocabulary, in an isolated `bench_chunks` table. It measures **latency, not quality**. BM25
   latency is real (real text, real index); vector *relevance* at those scales is not measured.
@@ -426,7 +452,5 @@ HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s a
   with a larger model.
 - **Gate floors are calibrated just under the first real run**, so a passing gate means "has not
   regressed", not "meets an externally meaningful bar".
-- **Tuning and test sets are not separated.** The hybrid weight was chosen by a sweep on the same
-  34 queries the metrics are reported on, so 0.96 is a tuned-set number and mildly optimistic.
-  Splitting these is a known follow-up.
-- **The ACL benchmark's `Average input tokens: 0`** is a bug, not a measurement (see §5).
+- **The adversarial benchmark's captured `Average input tokens: 0`** is a historical harness bug,
+  not a measurement. Re-run §5 before quoting input-token telemetry.

@@ -6,6 +6,7 @@ import { auth } from "@/auth";
 import { viewerFrom } from "@/lib/acl";
 import { DEMO_MODE } from "@/lib/demo";
 import { LIMITS, callerKey, checkRateLimit, tooManyRequests } from "@/lib/ratelimit";
+import { recordAnswerUsage } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
                 ? `Answer generation is disabled in this public demo — it runs on a local Ollama model that isn't available on the host. Retrieval is live: the ${contexts.length} passage(s) cited below are real, permission-filtered results for your query. Run the project locally to see grounded answers with citations.`
                 : "Answer generation is disabled in this public demo, and retrieval found no matching passages for this query.",
           });
+          recordAnswerUsage(null, null);
           send({ type: "done", refused: false, usage: null });
           controller.close();
           return;
@@ -96,6 +98,7 @@ export async function POST(req: NextRequest) {
         // Nothing retrieved → refuse without spending a generation.
         if (!answer) {
           send({ type: "delta", text: REFUSAL_SENTENCE });
+          recordAnswerUsage(null, null);
           send({ type: "done", refused: true, usage: null });
           controller.close();
           return;
@@ -105,11 +108,12 @@ export async function POST(req: NextRequest) {
           const ok =
             ev.type === "delta"
               ? send({ type: "delta", text: ev.text })
-              : send({
-                  type: "done",
-                  refused: ev.refused,
-                  usage: ev.outputTokens != null ? { output_tokens: ev.outputTokens } : null,
-                });
+            : (recordAnswerUsage(ev.inputTokens, ev.outputTokens),
+              send({
+                type: "done",
+                refused: ev.refused,
+                usage: ev.outputTokens != null ? { output_tokens: ev.outputTokens } : null,
+              }));
           if (!ok) break; // client disconnected — stop consuming the model stream
         }
         if (!closed) controller.close();

@@ -5,6 +5,7 @@ import { fetchKeyword, fetchSemantic, toScored, type Candidate } from "@/lib/ret
 import { auth } from "@/auth";
 import { viewerFrom, type Viewer } from "@/lib/acl";
 import { LIMITS, callerKey, checkRateLimit, rateLimitHeaders, tooManyRequests } from "@/lib/ratelimit";
+import { recordSearch } from "@/lib/usage";
 
 export const runtime = "nodejs";
 
@@ -115,6 +116,7 @@ export async function GET(req: NextRequest) {
     results = formatKeyword(await fetchKeyword(q, fileType, viewer));
   }
   const latencyMs = Math.round(performance.now() - started);
+  recordSearch();
 
   return NextResponse.json({ query: q, mode, latencyMs, results }, { headers: rateLimitHeaders(rl) });
 }

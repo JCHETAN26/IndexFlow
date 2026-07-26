@@ -12,6 +12,7 @@ import {
   isValidSeedToken,
 } from "@/lib/demo";
 import { LIMITS, callerKey, checkRateLimit, tooManyRequests } from "@/lib/ratelimit";
+import { recordUpload } from "@/lib/usage";
 
 export const runtime = "nodejs";
 
@@ -112,6 +113,7 @@ export async function POST(req: NextRequest) {
     { documentId, jobId: job.id },
     { attempts: 3, backoff: { type: "exponential", delay: 2000 }, removeOnComplete: true, removeOnFail: false },
   );
+  recordUpload(file.size);
 
   return NextResponse.json(
     { document, jobId: job.id, status: "QUEUED" },
