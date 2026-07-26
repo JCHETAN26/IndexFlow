@@ -1,0 +1,22 @@
+name: Dependency review
+
+# Fails a pull request that introduces a dependency with a known vulnerability, or one whose
+# licence is incompatible. Cheap, and it catches the class of problem that no amount of reading
+# our own code will.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure

@@ -35,6 +35,54 @@ jobs:
       - name: Build (type-checks)
         run: pnpm --filter @indexflow/web build
 
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # Pure logic, no services — fast enough to be the first thing that fails.
+      - name: Run unit tests
+        run: pnpm --filter @indexflow/web test:unit
+
+  container:
+    name: container build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # Both images must keep building. The worker is a separate target because Next's standalone
+      # output does not include its dependencies, and a broken worker image would otherwise only
+      # be discovered at deploy time.
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: runner
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: worker
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   eval:
     name: eval
     runs-on: ubuntu-latest
@@ -141,3 +189,8 @@ jobs:
       # an unprojected document never reads as INDEXED, and that reconciliation repairs drift.
       - name: Run cross-store consistency checks
         run: pnpm --filter @indexflow/web consistency:check
+
+      # The security + consistency regression suite. Every case in it corresponds to a defect
+      # that actually shipped, so a red test here means a real vulnerability came back.
+      - name: Run integration tests
+        run: pnpm --filter @indexflow/web test:integration

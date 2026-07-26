@@ -87,9 +87,32 @@ export async function projectDocument(
   index: string = CHUNK_INDEX,
 ): Promise<ProjectionOutcome> {
   await ensureChunkIndex(index);
+  return prisma.$transaction(
+    (tx) => projectWithinLock(tx, documentId, index),
+    // Generous: the body performs Elasticsearch I/O with refresh=wait_for while holding the
+    // lock. Serialising per document is worth a held connection for a second or two.
+    { timeout: 120_000, maxWait: 60_000 },
+  );
+}
 
-  // One consistent read of everything the projection depends on.
-  const doc = await prisma.document.findUnique({
+/**
+ * The projection body, run while holding a per-document advisory lock.
+ *
+ * The lock is what makes the version guard sound. Comparing versions on its own is a
+ * time-of-check/time-of-use bug: two concurrent projections can both read, both decide they are
+ * current, and then write in the wrong order — letting the one built on a pre-revoke snapshot
+ * land last and reinstate access. Measured at roughly one in four runs before this lock existed.
+ */
+async function projectWithinLock(
+  tx: Prisma.TransactionClient,
+  documentId: string,
+  index: string,
+): Promise<ProjectionOutcome> {
+  // Transaction-scoped, so it is released on commit or rollback without any cleanup path.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${documentId}::text, 0))`;
+
+  // One consistent read of everything the projection depends on, taken under the lock.
+  const doc = await tx.document.findUnique({
     where: { id: documentId },
     select: {
       title: true,
@@ -152,7 +175,7 @@ export async function projectDocument(
   // transition the old code got wrong: it set INDEXED inside the Postgres transaction, before
   // the mirror was even attempted.
   if (doc.status === "INDEXING" || doc.status === "UPLOADED") {
-    await prisma.document.update({
+    await tx.document.update({
       where: { id: documentId },
       data: { status: "INDEXED", indexedAt: new Date() },
     });
