@@ -89,7 +89,7 @@ the live `/eval` page work normally for guests. See `.env.example`.
 | Answer groundedness | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%**, relevance 100%, citations 100%, refusal **92%** |
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9** pass, no leaks across either leg |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** pass |
-| Direct object access | `pnpm --filter @indexflow/web acl:dao` | **10/10** pass — by-id fetch/delete/upload are gated |
+| Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** pass — by-id fetch/delete/upload and job listings are gated |
 | Adversarial | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** unauthorised disclosures, **0/10** prompt-injection leaks |
 | Latency at scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks: semantic 2.4–2.9 ms, hybrid 8.6–10.2 ms |
 

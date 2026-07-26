@@ -22,7 +22,7 @@ then run the six commands below in order. The generation eval takes ~30 minutes 
 | Retrieval quality | `pnpm --filter @indexflow/web eval` | hybrid **MRR 0.96**, R@1 90%, R@5 97% | PASS |
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9**, no leaks | PASS |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** | PASS |
-| Direct object access | `pnpm --filter @indexflow/web acl:dao` | **10/10** | PASS |
+| Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** | PASS |
 | Generation quality | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%**, refusal **92%** | PASS |
 | Adversarial security | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** disclosures, **0/10** injection leaks | PASS |
 | Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks | n/a |
@@ -175,8 +175,11 @@ Sharing changes retrieval visibility correctly. ✓
 
 Added after the run above, alongside the fix for the hole it covers: `GET /api/documents/[id]/file`
 had no authorization at all, so any anonymous caller who knew a document UUID could download the
-original file, and `DELETE` accepted ownerless documents from anyone. Retrieval filters visibility
-inside the query, so `acl:leak` structurally could not catch either.
+original file, and `DELETE` accepted ownerless documents from anyone. A follow-up audit of every
+route found a third: `GET /api/jobs` had no auth and returned the 50 most recent ingestion jobs
+across *all* documents, disclosing the **titles and file names of other people's private uploads**
+to anonymous callers. Retrieval filters visibility inside the query, so `acl:leak` structurally
+could not catch any of them.
 
 ```
 COMMAND:  pnpm --filter @indexflow/web acl:dao
@@ -200,6 +203,9 @@ EXIT:     0
   PASS  DELETE /api/documents/<private> anonymously → 401 (got 401)
   PASS  POST /api/documents/upload anonymously → 401 (got 401)
   PASS  the private document survived the anonymous DELETE attempt
+  PASS  GET /api/jobs anonymously → 401 (got 401)
+  PASS  GET /api/jobs anonymously does NOT disclose a private document's title
+  PASS  GET /api/jobs/<id> for a private document anonymously → 401 (got 401)
 ────────────────────────────────────────────────────────────
 No direct-object-access holes. ✓
 ```

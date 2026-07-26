@@ -33,6 +33,8 @@ function check(pass: boolean, label: string) {
 
 async function main() {
   const stamp = randomUUID().slice(0, 8);
+  // Distinctive enough that finding it in any response body is unambiguous evidence of a leak.
+  const privTitle = `${TAG} CONFIDENTIAL-${stamp}`;
   const owner = await prisma.user.create({
     data: { email: `dao-owner-${stamp}@example.test`, name: `${TAG} owner` },
     select: { id: true },
@@ -45,8 +47,8 @@ async function main() {
   // A private document owned by `owner`, and a public one as the positive control.
   const priv = await prisma.document.create({
     data: {
-      title: `${TAG} private`,
-      fileName: "private.md",
+      title: privTitle,
+      fileName: `private-${stamp}.md`,
       fileType: "md",
       status: "INDEXED",
       indexedAt: new Date(),
@@ -67,6 +69,11 @@ async function main() {
       ownerId: owner.id,
       storageKey: `dao-check/${stamp}/public.md`,
     },
+    select: { id: true },
+  });
+  // An ingestion job for the private document — the jobs endpoints echo its title.
+  const job = await prisma.ingestionJob.create({
+    data: { documentId: priv.id, status: "COMPLETED" },
     select: { id: true },
   });
 
@@ -138,6 +145,23 @@ async function main() {
       // than a wrong status code.
       const stillThere = await prisma.document.findUnique({ where: { id: priv.id }, select: { id: true } });
       check(stillThere !== null, "the private document survived the anonymous DELETE attempt");
+
+      // The ingestion-job surfaces echo document titles and file names, so they are list/read
+      // surfaces subject to the same ACL. /api/jobs previously had no auth at all and returned
+      // the 50 most recent jobs across every document — leaking private titles to anyone.
+      const jobsRes = await fetch(`${BASE_URL}/api/jobs`);
+      check(jobsRes.status === 401, `GET /api/jobs anonymously → 401 (got ${jobsRes.status})`);
+      const jobsBody = await jobsRes.text();
+      check(
+        !jobsBody.includes(privTitle),
+        "GET /api/jobs anonymously does NOT disclose a private document's title",
+      );
+
+      const jobRes = await fetch(`${BASE_URL}/api/jobs/${job.id}`);
+      check(
+        jobRes.status === 401,
+        `GET /api/jobs/<id> for a private document anonymously → 401 (got ${jobRes.status})`,
+      );
     }
   } finally {
     await prisma.document.deleteMany({ where: { id: { in: [priv.id, pub.id] } } }).catch(() => {});

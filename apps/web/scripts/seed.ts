@@ -55,7 +55,9 @@ async function upload(fileName: string, bytes: Buffer): Promise<string> {
 async function waitForJob(jobId: string, timeoutMs = 120_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await fetch(`${BASE_URL}/api/jobs/${jobId}`);
+    const res = await fetch(`${BASE_URL}/api/jobs/${jobId}`, {
+      headers: { "x-seed-token": SEED_TOKEN },
+    });
     if (res.ok) {
       const { status, error } = (await res.json()) as { status: string; error: string | null };
       if (status === "COMPLETED") return status;
