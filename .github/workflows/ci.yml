@@ -64,6 +64,12 @@ jobs:
     env:
       DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
       ES_URL: http://localhost:9200
+      # The consistency check drives the REAL ingest path, which reads the original file back
+      # out of object storage — so it needs MinIO, not just Postgres and Elasticsearch.
+      MINIO_ENDPOINT: http://localhost:9100
+      MINIO_ACCESS_KEY: indexflow
+      MINIO_SECRET_KEY: indexflow123
+      MINIO_BUCKET: indexflow
     steps:
       - uses: actions/checkout@v4
 
@@ -79,12 +85,34 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Not a `services:` entry: GitHub Actions cannot override a service container's command,
+      # and minio/minio needs `server /data`. The bucket is created on first write by
+      # lib/storage ensureBucket().
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9100:9000 \
+            -e MINIO_ROOT_USER=indexflow -e MINIO_ROOT_PASSWORD=indexflow123 \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -sf "http://localhost:9100/minio/health/live" >/dev/null; then
+              echo "MinIO is up."; exit 0
+            fi
+            sleep 2
+          done
+          echo "MinIO did not become ready in time." >&2
+          docker logs minio >&2 || true
+          exit 1
+
       # The eval/backfill scripts load apps/web/.env via --env-file; create it in CI.
       - name: Write env file
         run: |
           {
             echo "DATABASE_URL=${DATABASE_URL}"
             echo "ES_URL=${ES_URL}"
+            echo "MINIO_ENDPOINT=${MINIO_ENDPOINT}"
+            echo "MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}"
+            echo "MINIO_SECRET_KEY=${MINIO_SECRET_KEY}"
+            echo "MINIO_BUCKET=${MINIO_BUCKET}"
           } > apps/web/.env
 
       - name: Apply migrations
