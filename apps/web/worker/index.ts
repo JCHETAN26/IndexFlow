@@ -9,6 +9,7 @@ import { Worker } from "bullmq";
 import { prisma } from "../lib/prisma";
 import { ingestDocument } from "../lib/ingest";
 import { INGESTION_QUEUE, connection, type IngestionJobData } from "../lib/queue";
+import { drainOutbox, reconcile } from "../lib/outbox";
 
 const worker = new Worker<IngestionJobData>(
   INGESTION_QUEUE,
@@ -43,4 +44,51 @@ worker.on("failed", async (job, err) => {
   await prisma.document.update({ where: { id: documentId }, data: { status: "FAILED" } }).catch(() => {});
 });
 
+/**
+ * Outbox drainer. The inline projection in lib/outbox projectNow() covers the happy path; this
+ * is what makes the guarantee durable when it does not — a transient Elasticsearch outage, or a
+ * process that died between committing Postgres and projecting.
+ */
+const DRAIN_INTERVAL_MS = Number(process.env.OUTBOX_DRAIN_INTERVAL_MS ?? 5_000);
+const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 300_000);
+
+const drainTimer = setInterval(() => {
+  drainOutbox().then(
+    ({ processed, failed }) => {
+      if (processed || failed) console.log(`[outbox] drained ${processed} ok, ${failed} failed`);
+    },
+    (e) => console.error("[outbox] drain error:", e instanceof Error ? e.message : e),
+  );
+}, DRAIN_INTERVAL_MS);
+
+/**
+ * Periodic reconciliation. The outbox guarantees an update is owed; it cannot guarantee one ever
+ * landed, and nothing stops Elasticsearch being changed out from under us. This sweep compares
+ * both stores and queues repairs for anything that has drifted.
+ */
+const reconcileTimer = setInterval(() => {
+  reconcile().then(
+    ({ checked, repaired }) => {
+      if (repaired.length) {
+        console.warn(`[reconcile] ${repaired.length}/${checked} document(s) drifted; repair queued`);
+      }
+    },
+    (e) => console.error("[reconcile] error:", e instanceof Error ? e.message : e),
+  );
+}, RECONCILE_INTERVAL_MS);
+
+async function shutdown(signal: string) {
+  console.log(`[worker] ${signal} — shutting down`);
+  clearInterval(drainTimer);
+  clearInterval(reconcileTimer);
+  await worker.close();
+  await prisma.$disconnect();
+  process.exit(0);
+}
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
 console.log("[worker] listening on the ingestion queue…");
+console.log(
+  `[worker] outbox drain every ${DRAIN_INTERVAL_MS}ms, reconcile every ${RECONCILE_INTERVAL_MS}ms`,
+);

@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { updateDocumentAcl } from "@/lib/es";
+import { bumpAclVersion, projectNow } from "@/lib/outbox";
 
 /**
  * Permission model for permission-aware search. A document is visible to a viewer if
@@ -135,10 +135,22 @@ export async function documentAclTokens(documentId: string): Promise<string[]> {
 }
 
 /**
- * Push a document's current ACL (from Postgres) into its Elasticsearch chunks. Call after
- * changing ownership, `isPublic`, or grants so the keyword index stays consistent with the
- * source of truth. `refresh` waits for the update to be searchable (used by seeds/tests).
+ * Record that a document's ACL changed and bring the keyword index in line.
+ *
+ * Call after changing ownership, `isPublic`, or grants. This bumps the document's `aclVersion`
+ * and writes an outbox event in one transaction, then projects inline so the change is visible
+ * immediately; if that inline attempt fails, the committed outbox row guarantees the drainer
+ * picks it up.
+ *
+ * It used to write Elasticsearch directly with `updateDocumentAcl`, which had two failure modes:
+ * an update-by-query matched nothing when the document's chunks did not exist yet (so a revoke
+ * during an in-flight index was simply lost), and a failed write left no record that ES still
+ * owed an update. The `refresh` parameter is retained for call-site compatibility; projection is
+ * always refresh-synchronous now.
  */
-export async function syncDocumentAcl(documentId: string, refresh = false): Promise<void> {
-  await updateDocumentAcl(documentId, await documentAclTokens(documentId), undefined, refresh);
+export async function syncDocumentAcl(documentId: string, _refresh = false): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await bumpAclVersion(tx, documentId);
+  });
+  await projectNow(documentId);
 }

@@ -23,6 +23,7 @@ then run the six commands below in order. The generation eval takes ~30 minutes 
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9**, no leaks | PASS |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** | PASS |
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** | PASS |
+| Cross-store consistency | `pnpm --filter @indexflow/web consistency:check` | **8/8** | PASS |
 | Generation quality | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%**, refusal **92%** | PASS |
 | Adversarial security | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** disclosures, **0/10** injection leaks | PASS |
 | Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks | n/a |
@@ -216,6 +217,45 @@ private, and **200** again when restored.
 
 `acl:leak` (9/9) and `acl:sharing` (8/8) were re-run after these changes and produced output
 identical to §2 and §3, as did the retrieval eval in §1.
+
+## 3c. Cross-store consistency
+
+Added with the IF-1 outbox work. Postgres is the source of truth and Elasticsearch is a
+projection of it; these are the ways that projection could diverge. **Both of the first two
+checks failed before the change** — they were written against the old code specifically to prove
+the bugs were real, not hypothetical.
+
+```
+COMMAND:  pnpm --filter @indexflow/web consistency:check
+EXIT:     0
+```
+
+```
+[consistency-check] revoke racing an in-flight index
+────────────────────────────────────────────────────────────────
+  PASS  grantee CAN reach the document while granted [positive control]
+  PASS  revoked grantee CANNOT reach the document after a racing re-index
+
+[consistency-check] readiness when the projection has not happened
+────────────────────────────────────────────────────────────────
+  PASS  an unprojected document does NOT read as INDEXED (no false 'ready')
+  PASS  the owed projection is durably recorded in the outbox
+  PASS  draining the outbox completes the projection and marks it INDEXED
+
+[consistency-check] reconciliation of out-of-band drift
+────────────────────────────────────────────────────────────────
+  PASS  drift introduced [setup]
+  PASS  reconcile DETECTS the drifted document
+  PASS  reconcile REPAIRS it (chunks are back in ES)
+────────────────────────────────────────────────────────────────
+Postgres and Elasticsearch stay consistent. ✓
+```
+
+The first check is a **security** property, not a tidiness one. `ingestDocument` used to read a
+document's ACL, spend seconds embedding, then write that stale snapshot to Elasticsearch. A revoke
+landing in that window updated zero ES chunks (the new ones did not exist yet) and was then
+overwritten — leaving a revoked principal able to reach the document through keyword search.
+Reproduced on the old code, fixed by projecting from current state after the content settles.
 
 ## 4. Generation quality
 

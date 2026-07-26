@@ -3,8 +3,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { deleteObject } from "@/lib/storage";
-import { deleteDocumentChunks } from "@/lib/es";
 import { canReadDocument, viewerFrom } from "@/lib/acl";
+import { enqueueProjection, projectNow } from "@/lib/outbox";
 import { DEMO_MODE, demoReadOnlyResponse } from "@/lib/demo";
 
 export const runtime = "nodejs";
@@ -45,9 +45,17 @@ export async function DELETE(
       // Best-effort: don't block deletion of the record if the object is already gone.
       await deleteObject(doc.storageKey).catch(() => {});
     }
-    // Best-effort: remove the document's chunks from the ES keyword index too.
-    await deleteDocumentChunks(id, undefined, true).catch(() => {});
-    await prisma.document.delete({ where: { id } });
+
+    // Delete the row and record that Elasticsearch owes a removal, in one transaction. The
+    // outbox row has no foreign key precisely so it survives the document it refers to — a
+    // best-effort ES delete before the commit could silently leave the chunks (and therefore
+    // the content) searchable after the document was gone.
+    await prisma.$transaction(async (tx) => {
+      await tx.document.delete({ where: { id } });
+      await enqueueProjection(tx, id, "document:delete");
+    });
+    await projectNow(id);
+
     return new NextResponse(null, { status: 204 });
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {

@@ -83,6 +83,33 @@ enum DocumentStatus {
   FAILED
 }
 
+enum OutboxStatus {
+  PENDING
+  DONE
+  FAILED
+}
+
+/// Transactional outbox. A row is written in the SAME Postgres transaction as the state change
+/// it describes, so "Postgres committed" and "Elasticsearch owes an update" cannot disagree.
+/// The projector (lib/outbox.ts) drains it by re-reading current state, never by replaying a
+/// stored payload — which is what makes retries safe and stale writes impossible.
+///
+/// Intentionally has no relation to Document: a deletion event must outlive its document.
+model OutboxEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  documentId  String       @map("document_id") @db.Uuid
+  reason      String
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?      @map("last_error")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  processedAt DateTime?    @map("processed_at")
+
+  @@index([status, createdAt])
+  @@index([documentId])
+  @@map("outbox_events")
+}
+
 enum JobStatus {
   QUEUED
   RUNNING
@@ -109,6 +136,13 @@ model Document {
   // joins on the tables below (see lib/acl.ts, lib/retrieve.ts).
   ownerId  String?  @map("owner_id") @db.Uuid
   isPublic Boolean  @default(false) @map("is_public")
+
+  // Monotonic projection versions (see lib/outbox.ts). `contentVersion` changes when the
+  // document's chunks are rewritten, `aclVersion` when its visibility changes. Both are
+  // mirrored onto the Elasticsearch chunks so the projector can discard a write built from a
+  // snapshot older than what ES already holds.
+  aclVersion     Int @default(0) @map("acl_version")
+  contentVersion Int @default(0) @map("content_version")
 
   owner  User?           @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   grants DocumentGrant[]

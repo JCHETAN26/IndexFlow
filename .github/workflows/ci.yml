@@ -108,3 +108,8 @@ jobs:
       # server is running, and the authorization gate it checks is the part that must not regress.
       - name: Run direct-object-access checks
         run: pnpm --filter @indexflow/web acl:dao
+
+      # Cross-store consistency gate: proves a revoke racing an in-flight index is not lost, that
+      # an unprojected document never reads as INDEXED, and that reconciliation repairs drift.
+      - name: Run cross-store consistency checks
+        run: pnpm --filter @indexflow/web consistency:check

@@ -32,6 +32,11 @@ const MAPPING = {
     // Denormalised ACL principal tokens ("public" | "user:<id>" | "group:<id>") for
     // permission-aware keyword search — filtered with `terms` against the viewer (lib/acl).
     acl: { type: "keyword" },
+    // Projection versions copied from the source document (lib/outbox.ts). They let the
+    // projector tell a fresh write from one built on a stale snapshot, and let the reconciler
+    // spot drift without re-reading every chunk's content.
+    acl_version: { type: "integer" },
+    content_version: { type: "integer" },
     metadata: { type: "object", enabled: false },
     created_at: { type: "date" },
   },
@@ -73,6 +78,8 @@ export interface EsChunk {
   fileType: string;
   content: string;
   acl?: string[]; // ACL principal tokens for this chunk's document (lib/acl aclTokens)
+  aclVersion?: number;
+  contentVersion?: number;
   createdAt?: Date;
 }
 
@@ -94,6 +101,8 @@ export async function indexChunks(
       file_type: c.fileType,
       content: c.content,
       acl: c.acl ?? [],
+      acl_version: c.aclVersion ?? 0,
+      content_version: c.contentVersion ?? 0,
       created_at: c.createdAt ?? new Date(),
     },
   ]);
@@ -147,6 +156,54 @@ export async function deleteDocumentChunks(
       if (e?.meta?.statusCode === 404) return;
       throw e;
     });
+}
+
+/**
+ * What the keyword index currently believes about a document: how many chunks it holds and at
+ * which projection versions. Versions come back as -1 when nothing is indexed, so a first
+ * projection (version 0 or 1) always compares as newer.
+ */
+export async function getProjectionState(
+  documentId: string,
+  index: string = CHUNK_INDEX,
+): Promise<{ chunkCount: number; aclVersion: number; contentVersion: number }> {
+  try {
+    const res = await es().search<{ acl_version?: number; content_version?: number }>({
+      index,
+      size: 1,
+      track_total_hits: true,
+      query: { term: { document_id: documentId } },
+      _source: ["acl_version", "content_version"],
+    });
+    const total = typeof res.hits.total === "number" ? res.hits.total : (res.hits.total?.value ?? 0);
+    const src = res.hits.hits[0]?._source;
+    return {
+      chunkCount: total,
+      aclVersion: src?.acl_version ?? -1,
+      contentVersion: src?.content_version ?? -1,
+    };
+  } catch (e: any) {
+    if (e?.meta?.statusCode === 404) return { chunkCount: 0, aclVersion: -1, contentVersion: -1 };
+    throw e;
+  }
+}
+
+/**
+ * How many chunks the keyword index currently holds for a document. Used by the consistency
+ * check and the reconciler to compare the ES projection against Postgres, which is the source
+ * of truth. Returns 0 when the index does not exist yet.
+ */
+export async function countDocumentChunks(
+  documentId: string,
+  index: string = CHUNK_INDEX,
+): Promise<number> {
+  try {
+    const res = await es().count({ index, query: { term: { document_id: documentId } } });
+    return res.count;
+  } catch (e: any) {
+    if (e?.meta?.statusCode === 404) return 0;
+    throw e;
+  }
 }
 
 export interface EsKeywordHit {
