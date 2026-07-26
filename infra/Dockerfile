@@ -50,7 +50,14 @@ ENV HOME=/home/indexflow
 ENV TRANSFORMERS_CACHE=/home/indexflow/.cache/huggingface
 USER indexflow
 WORKDIR /repo/apps/web
-CMD ["pnpm", "exec", "tsx", "worker/index.ts"]
+# Invoke tsx directly rather than through `pnpm exec`: corepack would otherwise fetch pnpm from
+# the npm registry on every container start, making the worker unable to boot without network
+# access to npm and adding seconds to startup.
+#
+# Known tradeoff: this image is ~5 GB because it reuses the build stage, dev dependencies and
+# all. Slimming it (a prod install plus tsx, or precompiling the worker) is worthwhile but is an
+# optimisation, not a correctness fix.
+CMD ["./node_modules/.bin/tsx", "worker/index.ts"]
 
 # ── runtime ───────────────────────────────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS runner
