@@ -28,6 +28,7 @@ model User {
 
   // ── Permissions (Stage: permission-aware search) ──
   ownedDocuments   Document[]      @relation("DocumentOwner")
+  ownedGroups      Group[]         @relation("GroupOwner")
   groupMemberships GroupMember[]
   documentGrants   DocumentGrant[]
 
@@ -155,14 +156,24 @@ model Document {
 }
 
 // A user or a group to which visibility of a set of resources is granted.
+/// A group of users that documents can be shared with.
+///
+/// `ownerId` is who may change the membership. It is nullable because groups created before the
+/// column existed have no owner, and the application treats those as unmanageable rather than
+/// guessing: an ownerless group fails closed, so nobody can add themselves to it. Without an owner
+/// there is nothing to authorize against, and membership becomes self-service — which is exactly
+/// how a signed-in user could grant themselves access to every document shared with a group.
 model Group {
   id        String   @id @default(uuid()) @db.Uuid
   name      String   @unique
   createdAt DateTime @default(now()) @map("created_at")
+  ownerId   String?  @map("owner_id") @db.Uuid
 
+  owner   User?           @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   members GroupMember[]
   grants  DocumentGrant[]
 
+  @@index([ownerId])
   @@map("groups")
 }
 

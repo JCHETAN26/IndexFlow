@@ -2,12 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { DEMO_MODE, demoReadOnlyResponse } from "@/lib/demo";
+import { AccessError } from "@/lib/acl";
+import { assertCanAdministerGroup } from "@/lib/groups";
 
 export const runtime = "nodejs";
 
 async function requireUser(): Promise<string | NextResponse> {
   const userId = (await auth())?.user?.id ?? null;
   return userId ?? NextResponse.json({ error: "Sign in to manage groups." }, { status: 401 });
+}
+
+/**
+ * Authorize the caller to administer this group, or return the response to send.
+ *
+ * Being signed in is NOT enough. Group membership grants read access to every document shared
+ * with the group, so an unauthorized add is a privilege escalation, not a bookkeeping error.
+ */
+async function requireGroupAdmin(groupId: string, userId: string): Promise<NextResponse | null> {
+  try {
+    await assertCanAdministerGroup(groupId, userId);
+    return null;
+  } catch (e) {
+    if (e instanceof AccessError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
 }
 
 async function groupMembers(groupId: string) {
@@ -42,6 +60,9 @@ export async function POST(
   if (typeof user !== "string") return user;
 
   const { id } = await params;
+  const denied = await requireGroupAdmin(id, user);
+  if (denied) return denied;
+
   const body = (await req.json().catch(() => ({}))) as { email?: unknown };
   const email = typeof body.email === "string" ? body.email.trim() : "";
   if (!email) return NextResponse.json({ error: "Provide a user email." }, { status: 400 });
@@ -76,6 +97,9 @@ export async function DELETE(
   if (typeof user !== "string") return user;
 
   const { id } = await params;
+  const denied = await requireGroupAdmin(id, user);
+  if (denied) return denied;
+
   const userId = req.nextUrl.searchParams.get("userId");
   if (!userId) return NextResponse.json({ error: "Missing userId." }, { status: 400 });
 

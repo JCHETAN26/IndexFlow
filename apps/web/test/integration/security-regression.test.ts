@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
+  AccessError,
   canReadDocument,
   documentVisibilityWhere,
   syncDocumentAcl,
@@ -15,6 +16,7 @@ import {
   getProjectionState,
 } from "@/lib/es";
 import { drainOutbox, projectDocument, reconcile } from "@/lib/outbox";
+import { assertCanAdministerGroup, visibleGroupsWhere } from "@/lib/groups";
 import { ingestDocument } from "@/lib/ingest";
 import { fetchKeyword, fetchSemantic } from "@/lib/retrieve";
 import { putObject, storageKeyFor } from "@/lib/storage";
@@ -277,5 +279,98 @@ describe("cross-store consistency (the lost revoke and the false 'ready')", () =
     await prisma.document.delete({ where: { id } });
     await projectDocument(id); // what the DELETE route's outbox event triggers
     expect(await countDocumentChunks(id)).toBe(0);
+  });
+});
+
+describe("group administration (the self-service membership escalation)", () => {
+  /**
+   * Group membership IS an access-control decision: a viewer's principals include a
+   * `group:<id>` token for every group they belong to, so adding yourself to a group grants read
+   * access to every document shared with it. These endpoints originally required only a
+   * signed-in caller, and the escalation was reproduced end to end against a running server — a
+   * guest added itself to a restricted group and immediately read the restricted document.
+   */
+  const mkGroup = (label: string, ownerId: string | null, memberIds: string[] = []) =>
+    prisma.group.create({
+      data: {
+        name: `${TAG}-${label}-${randomUUID().slice(0, 6)}`,
+        ownerId,
+        members: { create: memberIds.map((userId) => ({ userId })) },
+      },
+      select: { id: true },
+    });
+
+  it("refuses a stranger, without confirming the group exists", async () => {
+    const g = await mkGroup("owned", owner.id);
+    try {
+      // 404, not 403 — group ids must not be probeable.
+      await expect(assertCanAdministerGroup(g.id, other.id)).rejects.toMatchObject({ status: 404 });
+    } finally {
+      await prisma.group.delete({ where: { id: g.id } }).catch(() => {});
+    }
+  });
+
+  it("refuses a mere MEMBER permission to change membership", async () => {
+    // Being in a group is not administering it. If members could add members, one compromised
+    // account would re-open the whole escalation.
+    const g = await mkGroup("member", owner.id, [other.id]);
+    try {
+      await expect(assertCanAdministerGroup(g.id, other.id)).rejects.toMatchObject({ status: 403 });
+    } finally {
+      await prisma.group.delete({ where: { id: g.id } }).catch(() => {});
+    }
+  });
+
+  it("allows the owner [positive control]", async () => {
+    const g = await mkGroup("owner-ok", owner.id);
+    try {
+      await expect(assertCanAdministerGroup(g.id, owner.id)).resolves.toBeUndefined();
+    } finally {
+      await prisma.group.delete({ where: { id: g.id } }).catch(() => {});
+    }
+  });
+
+  it("treats an ownerless group as unmanageable by anyone", async () => {
+    // Fails closed. Inferring an owner (say, the first member) would hand control to somebody who
+    // was merely added — the same escalation in a smaller costume.
+    const g = await mkGroup("orphan", null, [other.id]);
+    try {
+      await expect(assertCanAdministerGroup(g.id, other.id)).rejects.toBeInstanceOf(AccessError);
+      await expect(assertCanAdministerGroup(g.id, owner.id)).rejects.toBeInstanceOf(AccessError);
+    } finally {
+      await prisma.group.delete({ where: { id: g.id } }).catch(() => {});
+    }
+  });
+
+  it("does not list groups the caller neither owns nor belongs to", async () => {
+    // The listing used to expose every group name and every member's email address.
+    const g = await mkGroup("hidden", owner.id);
+    try {
+      const toStranger = await prisma.group.findMany({
+        where: { AND: [{ id: g.id }, visibleGroupsWhere(other.id)] },
+        select: { id: true },
+      });
+      expect(toStranger).toHaveLength(0);
+
+      const toOwner = await prisma.group.findMany({
+        where: { AND: [{ id: g.id }, visibleGroupsWhere(owner.id)] },
+        select: { id: true },
+      });
+      expect(toOwner).toHaveLength(1);
+    } finally {
+      await prisma.group.delete({ where: { id: g.id } }).catch(() => {});
+    }
+  });
+
+  it("end to end: a stranger cannot reach a group-shared document by self-adding", async () => {
+    const g = await mkGroup("e2e", owner.id);
+    const docId = await makeDoc({ grantGroupId: g.id });
+    try {
+      expect(await canReadDocument(await viewerFrom(other.id), docId)).toBe(false);
+      await expect(assertCanAdministerGroup(g.id, other.id)).rejects.toBeInstanceOf(AccessError);
+      expect(await canReadDocument(await viewerFrom(other.id), docId)).toBe(false);
+    } finally {
+      await prisma.group.delete({ where: { id: g.id } }).catch(() => {});
+    }
   });
 });

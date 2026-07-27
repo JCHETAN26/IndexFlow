@@ -13,6 +13,8 @@ interface Group {
   id: string;
   name: string;
   createdAt: string;
+  /** Whether the signed-in user owns this group. Only the owner may change its membership. */
+  isOwner: boolean;
   grantCount: number;
   members: Member[];
 }
@@ -109,7 +111,19 @@ export default function GroupsPage() {
                   </p>
                 </div>
               </div>
-              <MemberEditor group={g} onChange={(members) => applyMembers(g.id, members)} />
+              {/* Membership is an access-control decision, so only the owner may change it.
+                  The server enforces this; hiding the controls avoids offering an action that
+                  can only fail. Members of a group they do not own still see who is in it. */}
+              {g.isOwner ? (
+                <MemberEditor group={g} onChange={(members) => applyMembers(g.id, members)} />
+              ) : (
+                <p className="mt-3 text-xs text-neutral-400">
+                  {g.members.length > 0
+                    ? g.members.map((m) => m.label).join(", ")
+                    : "No members yet."}{" "}
+                  · Only the group owner can change membership.
+                </p>
+              )}
             </li>
           ))}
         </ul>

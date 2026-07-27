@@ -15,12 +15,15 @@ export async function GET() {
       latencyMs: Math.round(performance.now() - started),
     });
   } catch (e) {
+    // Health is unauthenticated, so the response must not describe the failure. Driver errors
+    // routinely embed the database host, port and user — occasionally the whole connection
+    // string. Log the detail; tell the caller only that the check failed.
+    console.error("health check failed", e);
     return NextResponse.json(
       {
         ok: false,
         service: "indexflow-web",
         db: "error",
-        error: e instanceof Error ? e.message : "health check failed",
         latencyMs: Math.round(performance.now() - started),
       },
       { status: 503 },
