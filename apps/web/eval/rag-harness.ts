@@ -15,6 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { prisma } from "../lib/prisma";
 import { chunkText } from "../lib/chunk";
 import { embed, toVectorLiteral } from "../lib/embed";
@@ -59,7 +60,12 @@ const evalSet =
         ...answers.filter((a) => !a.answerable).slice(0, Math.max(1, Math.floor(EVAL_LIMIT / 3))),
       ]
     : answers;
-const CHECKPOINT_DIR = process.env.EVAL_RUN_DIR ?? new URL("../../../.evalrun", import.meta.url).pathname;
+// Resolved from cwd, NOT from `new URL(..., import.meta.url)`. Unlike the CLI entry points in
+// this directory, this module is imported by app/api/eval/rag/route.ts and therefore goes through
+// webpack, which resolves that form as a module request and fails the Next build on it. Both the
+// CLI (`pnpm --filter @indexflow/web ...`) and the Next server run with cwd = apps/web, so ../../
+// is the repo root in either case.
+const CHECKPOINT_DIR = process.env.EVAL_RUN_DIR ?? resolve(process.cwd(), "../../.evalrun");
 const CHECKPOINT = `${CHECKPOINT_DIR}/rag-work-${EVAL_LIMIT > 0 ? EVAL_LIMIT : "full"}.json`;
 const CHECKPOINT_SIGNATURE = JSON.stringify({
   evalLimit: EVAL_LIMIT,
