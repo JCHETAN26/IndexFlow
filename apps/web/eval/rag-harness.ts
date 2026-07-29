@@ -14,6 +14,7 @@
  * run's numbers (as the retrieval harness does) once you have a baseline.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { prisma } from "../lib/prisma";
 import { chunkText } from "../lib/chunk";
 import { embed, toVectorLiteral } from "../lib/embed";
@@ -43,6 +44,10 @@ const RAG_K = 6; // contexts fed to the generator per question
 // phase every request hits that one loaded model, so this parallelism costs no extra model
 // memory — it only pipelines requests. Keep it modest on small boxes (KV-cache growth).
 const PHASE_CONCURRENCY = 2;
+// The judge is the 7B model, and two of its requests in flight double the KV cache. On an 8 GB
+// box that tips into swap: measured 195 s/item at concurrency 2, versus 51 s/item at concurrency
+// 1 on a 16 GB host. Serialising costs nothing real — the pipelining never paid for itself here.
+const JUDGE_PHASE_CONCURRENCY = 1;
 
 // Optional quick-run subset: EVAL_LIMIT=N caps the set (~2/3 answerable, 1/3 unanswerable)
 // so you can sanity-check the whole pipeline without the full ~20-question run. Unset = full.
@@ -54,6 +59,15 @@ const evalSet =
         ...answers.filter((a) => !a.answerable).slice(0, Math.max(1, Math.floor(EVAL_LIMIT / 3))),
       ]
     : answers;
+const CHECKPOINT_DIR = process.env.EVAL_RUN_DIR ?? new URL("../../../.evalrun", import.meta.url).pathname;
+const CHECKPOINT = `${CHECKPOINT_DIR}/rag-work-${EVAL_LIMIT > 0 ? EVAL_LIMIT : "full"}.json`;
+const CHECKPOINT_SIGNATURE = JSON.stringify({
+  evalLimit: EVAL_LIMIT,
+  questions: evalSet.map((a) => a.q),
+  genModel: GEN_MODEL,
+  judgeModel: JUDGE_MODEL,
+  faithfulnessModel: FAITHFULNESS_MODEL,
+});
 
 export interface RagGateRow {
   name: string;
@@ -229,6 +243,22 @@ interface Work {
   error?: string;
 }
 
+function saveCheckpoint(stage: string, work: Work[]): void {
+  mkdirSync(CHECKPOINT_DIR, { recursive: true });
+  writeFileSync(
+    CHECKPOINT,
+    JSON.stringify({ savedAt: new Date().toISOString(), stage, signature: CHECKPOINT_SIGNATURE, work }, null, 2),
+  );
+}
+
+function loadCheckpoint(): Work[] | null {
+  if (!existsSync(CHECKPOINT)) return null;
+  const raw = JSON.parse(readFileSync(CHECKPOINT, "utf8")) as { signature?: string; stage?: string; work?: Work[] };
+  if (raw.signature !== CHECKPOINT_SIGNATURE || !Array.isArray(raw.work)) return null;
+  phase(`resuming checkpoint ${CHECKPOINT}${raw.stage ? ` (${raw.stage})` : ""}`);
+  return raw.work;
+}
+
 const KEEP = "10m"; // hold the current phase's model resident across all its items
 
 // The run takes tens of minutes (cold model loads dominate), so report progress rather than
@@ -238,27 +268,33 @@ const phase = (msg: string) =>
   console.log(`[rag-eval +${String(Math.round((Date.now() - t0) / 1000)).padStart(4)}s] ${msg}`);
 
 export async function runRagEvaluation(): Promise<RagReport> {
-  phase("preparing contexts (seed + retrieve)…");
-  const prepared = await prepareContexts();
-  phase(`contexts ready for ${prepared.length} questions`);
-
   // The eval is run in phases by model so only one large model is resident at a time. On an
   // 8 GB box the three models (~11 GB total) cannot coexist: interleaving gen→judge→minicheck
   // per item swap-thrashes a cold load past the fetch timeout. Phasing loads each model once.
-  const work: Work[] = prepared.map((p) => ({
-    p,
-    contextText: renderContexts(p.contexts),
-    answer: "",
-    rel: { answer_relevance: 0, citation_correctness: 0, refused: false, reasoning: "" },
-    claims: [],
-    unsupported: [],
-  }));
+  let work = loadCheckpoint();
+  if (!work) {
+    phase("preparing contexts (seed + retrieve)…");
+    const prepared = await prepareContexts();
+    phase(`contexts ready for ${prepared.length} questions`);
+    work = prepared.map((p) => ({
+      p,
+      contextText: renderContexts(p.contexts),
+      answer: "",
+      rel: { answer_relevance: 0, citation_correctness: 0, refused: false, reasoning: "" },
+      claims: [],
+      unsupported: [],
+    }));
+    saveCheckpoint("contexts", work);
+  }
 
   // ── Phase 1: generation (only GEN_MODEL resident) ──
-  phase(`phase 1/3: generating ${work.length} answers with ${GEN_MODEL} (loading model…)`);
-  await warmModel(GEN_MODEL, KEEP);
-  let done = 0;
-  await mapLimit(work, PHASE_CONCURRENCY, async (w) => {
+  const toGenerate = work.filter((w) => !w.error && !w.answer);
+  phase(`phase 1/3: generating ${toGenerate.length}/${work.length} answers with ${GEN_MODEL} (loading model…)`);
+  // Resuming a checkpoint past phase 1 leaves nothing to generate: skip the load entirely so a
+  // resume never pays for a model it will not call (phase 3 guards itself the same way).
+  if (toGenerate.length) await warmModel(GEN_MODEL, KEEP);
+  let done = work.length - toGenerate.length;
+  await mapLimit(toGenerate, PHASE_CONCURRENCY, async (w) => {
     try {
       const { text } = await generateAnswer(w.p.q, w.p.contexts, KEEP);
       w.answer = text;
@@ -266,23 +302,25 @@ export async function runRagEvaluation(): Promise<RagReport> {
       w.error = `generation: ${e instanceof Error ? e.message : "failed"}`;
     }
     phase(`  generated ${++done}/${work.length}`);
+    saveCheckpoint("generation", work);
   });
-  await unloadModel(GEN_MODEL);
+  if (toGenerate.length) await unloadModel(GEN_MODEL);
 
   // ── Phase 2: relevance + citation judge (only JUDGE_MODEL resident) ──
-  phase(`phase 2/3: judging relevance + citations with ${JUDGE_MODEL} (loading model…)`);
-  await warmModel(JUDGE_MODEL, KEEP);
-  done = 0;
-  await mapLimit(work, PHASE_CONCURRENCY, async (w) => {
-    if (w.error) return;
+  const toJudge = work.filter((w) => !w.error && w.answer && w.rel.reasoning === "");
+  phase(`phase 2/3: judging ${toJudge.length}/${work.length} relevance + citation rows with ${JUDGE_MODEL} (loading model…)`);
+  if (toJudge.length) await warmModel(JUDGE_MODEL, KEEP);
+  done = work.length - toJudge.length;
+  await mapLimit(toJudge, JUDGE_PHASE_CONCURRENCY, async (w) => {
     try {
       w.rel = await relevanceJudge(w.p.q, w.contextText, w.answer, KEEP);
     } catch (e) {
       w.error = `judge: ${e instanceof Error ? e.message : "failed"}`;
     }
     phase(`  judged ${++done}/${work.length}`);
+    saveCheckpoint("relevance", work);
   });
-  await unloadModel(JUDGE_MODEL);
+  if (toJudge.length) await unloadModel(JUDGE_MODEL);
 
   // Decide which answers need per-claim grounding: a refusal is vacuously faithful.
   for (const w of work) {
@@ -309,6 +347,7 @@ export async function runRagEvaluation(): Promise<RagReport> {
         const ok = await claimSupported(w.contextText, c, KEEP);
         if (!ok) w.unsupported.push(c);
         phase(`  checked claim ${++checked}/${totalClaims}`);
+        saveCheckpoint("faithfulness", work);
       }
     } catch (e) {
       w.error = `minicheck: ${e instanceof Error ? e.message : "failed"}`;

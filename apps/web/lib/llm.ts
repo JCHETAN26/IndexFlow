@@ -250,7 +250,11 @@ export async function relevanceJudge(
     format: QWEN_JUDGE_SCHEMA,
     stream: false,
     keep_alive: keepAlive,
-    options: { temperature: 0 },
+    // num_predict caps a runaway judge, it is not a tuning knob: observed verdicts run ~40 tokens
+    // (reasoning 124-227 chars), so 96 leaves headroom and rarely binds. Note the failure mode if
+    // it ever does — the constrained JSON is truncated mid-object and the parse below falls to the
+    // catch, scoring the item 0. Raise it rather than trimming the schema if that starts happening.
+    options: { temperature: 0, num_predict: 96 },
   });
   try {
     const j = JSON.parse(res.message.content) as Record<string, unknown>;
