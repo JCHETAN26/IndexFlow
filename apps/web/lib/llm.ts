@@ -77,7 +77,13 @@ function genMessages(question: string, contexts: AnswerContext[]) {
 
 export type AnswerEvent =
   | { type: "delta"; text: string }
-  | { type: "done"; text: string; outputTokens: number | null; refused: boolean };
+  | {
+      type: "done";
+      text: string;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      refused: boolean;
+    };
 
 /** Stream a grounded answer as text deltas, ending with a `done` event. */
 export async function* streamAnswer(
@@ -94,6 +100,7 @@ export async function* streamAnswer(
       options: { temperature: 0 },
     });
     let full = "";
+    let inputTokens: number | null = null;
     let outputTokens: number | null = null;
     for await (const part of res) {
       const t = part.message?.content ?? "";
@@ -101,10 +108,14 @@ export async function* streamAnswer(
         full += t;
         yield { type: "delta", text: t };
       }
-      if (part.done) outputTokens = part.eval_count ?? outputTokens;
+      if (part.done) {
+        inputTokens = part.prompt_eval_count ?? inputTokens;
+        outputTokens = part.eval_count ?? outputTokens;
+      }
     }
+    span.setAttribute("inputTokens", inputTokens ?? 0);
     span.setAttribute("outputTokens", outputTokens ?? 0);
-    yield { type: "done", text: full.trim(), outputTokens, refused: looksLikeRefusal(full) };
+    yield { type: "done", text: full.trim(), inputTokens, outputTokens, refused: looksLikeRefusal(full) };
   } finally {
     span.end();
   }
@@ -239,7 +250,11 @@ export async function relevanceJudge(
     format: QWEN_JUDGE_SCHEMA,
     stream: false,
     keep_alive: keepAlive,
-    options: { temperature: 0 },
+    // num_predict caps a runaway judge, it is not a tuning knob: observed verdicts run ~40 tokens
+    // (reasoning 124-227 chars), so 96 leaves headroom and rarely binds. Note the failure mode if
+    // it ever does — the constrained JSON is truncated mid-object and the parse below falls to the
+    // catch, scoring the item 0. Raise it rather than trimming the schema if that starts happening.
+    options: { temperature: 0, num_predict: 96 },
   });
   try {
     const j = JSON.parse(res.message.content) as Record<string, unknown>;

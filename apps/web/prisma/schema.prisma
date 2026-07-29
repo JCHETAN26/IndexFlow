@@ -28,6 +28,7 @@ model User {
 
   // ── Permissions (Stage: permission-aware search) ──
   ownedDocuments   Document[]      @relation("DocumentOwner")
+  ownedGroups      Group[]         @relation("GroupOwner")
   groupMemberships GroupMember[]
   documentGrants   DocumentGrant[]
 
@@ -83,6 +84,33 @@ enum DocumentStatus {
   FAILED
 }
 
+enum OutboxStatus {
+  PENDING
+  DONE
+  FAILED
+}
+
+/// Transactional outbox. A row is written in the SAME Postgres transaction as the state change
+/// it describes, so "Postgres committed" and "Elasticsearch owes an update" cannot disagree.
+/// The projector (lib/outbox.ts) drains it by re-reading current state, never by replaying a
+/// stored payload — which is what makes retries safe and stale writes impossible.
+///
+/// Intentionally has no relation to Document: a deletion event must outlive its document.
+model OutboxEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  documentId  String       @map("document_id") @db.Uuid
+  reason      String
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?      @map("last_error")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  processedAt DateTime?    @map("processed_at")
+
+  @@index([status, createdAt])
+  @@index([documentId])
+  @@map("outbox_events")
+}
+
 enum JobStatus {
   QUEUED
   RUNNING
@@ -110,6 +138,13 @@ model Document {
   ownerId  String?  @map("owner_id") @db.Uuid
   isPublic Boolean  @default(false) @map("is_public")
 
+  // Monotonic projection versions (see lib/outbox.ts). `contentVersion` changes when the
+  // document's chunks are rewritten, `aclVersion` when its visibility changes. Both are
+  // mirrored onto the Elasticsearch chunks so the projector can discard a write built from a
+  // snapshot older than what ES already holds.
+  aclVersion     Int @default(0) @map("acl_version")
+  contentVersion Int @default(0) @map("content_version")
+
   owner  User?           @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   grants DocumentGrant[]
 
@@ -121,14 +156,24 @@ model Document {
 }
 
 // A user or a group to which visibility of a set of resources is granted.
+/// A group of users that documents can be shared with.
+///
+/// `ownerId` is who may change the membership. It is nullable because groups created before the
+/// column existed have no owner, and the application treats those as unmanageable rather than
+/// guessing: an ownerless group fails closed, so nobody can add themselves to it. Without an owner
+/// there is nothing to authorize against, and membership becomes self-service — which is exactly
+/// how a signed-in user could grant themselves access to every document shared with a group.
 model Group {
   id        String   @id @default(uuid()) @db.Uuid
   name      String   @unique
   createdAt DateTime @default(now()) @map("created_at")
+  ownerId   String?  @map("owner_id") @db.Uuid
 
+  owner   User?           @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   members GroupMember[]
   grants  DocumentGrant[]
 
+  @@index([ownerId])
   @@map("groups")
 }
 
@@ -147,6 +192,9 @@ model GroupMember {
 // One access grant on a document to exactly one principal — either a user
 // (`userId`) or a group (`groupId`). Ownership and `isPublic` are handled on the
 // Document itself; this table holds explicit shares beyond those.
+// A grant targets exactly one principal — a user OR a group. Prisma cannot express that, so it
+// is enforced by the CHECK constraint `document_grants_exactly_one_principal` (migration
+// 20260726020000). Both-null grants nothing; both-set silently widens access in lib/acl aclTokens.
 model DocumentGrant {
   id         String  @id @default(uuid()) @db.Uuid
   documentId String  @map("document_id") @db.Uuid

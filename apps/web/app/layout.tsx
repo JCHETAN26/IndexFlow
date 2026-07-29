@@ -37,6 +37,9 @@ export default async function RootLayout({
                 <Link href="/jobs" className="hover:text-neutral-900">
                   Jobs
                 </Link>
+                <Link href="/groups" className="hover:text-neutral-900">
+                  Groups
+                </Link>
                 <Link href="/eval" className="hover:text-neutral-900">
                   Eval
                 </Link>

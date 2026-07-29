@@ -1,0 +1,29 @@
+name: Dependency review
+
+# Fails a pull request that introduces a dependency with a known vulnerability, or one whose
+# licence is incompatible. Cheap, and it catches the class of problem that no amount of reading
+# our own code will.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ACTION REQUIRED to make this enforcing: enable Dependency graph at
+      # Settings → Code security and analysis. Until then the action errors with "Dependency
+      # review is not supported on this repository", which is a repo setting, not a code problem
+      # — so it is non-blocking rather than a check that is permanently red for a reason nobody
+      # can fix in a pull request. Remove continue-on-error once the setting is on.
+      - uses: actions/dependency-review-action@v4
+        continue-on-error: true
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure

@@ -4,16 +4,29 @@ import { getObject } from "./storage";
 import { extractText } from "./extract";
 import { chunkText } from "./chunk";
 import { embed, toVectorLiteral } from "./embed";
-import { ensureChunkIndex, indexChunks, deleteDocumentChunks, type EsChunk } from "./es";
-import { aclTokens } from "./acl";
+import { enqueueProjection, projectNow } from "./outbox";
 
 /**
- * Index a document end to end: download the original from object storage, extract text,
- * chunk, embed, write chunks into Postgres (source of truth + embeddings) and mirror them
- * into Elasticsearch (keyword search + highlighting). Idempotent — re-running replaces the
- * document's existing chunks in both stores. Called by the BullMQ worker (Step 6b/6c).
+ * Index a document end to end: download the original from object storage, extract text, chunk,
+ * embed, and write chunks into Postgres — the source of truth. Elasticsearch is NOT written here.
+ * Instead the same transaction records an outbox event, and the projector (lib/outbox.ts) brings
+ * the keyword index in line by re-reading current state.
+ *
+ * That indirection is deliberate. Writing ES directly from here meant using an ACL snapshot taken
+ * before several seconds of embedding, which silently discarded any permission change made in the
+ * meantime. Idempotent — re-running replaces the document's chunks in both stores.
+ * Called by the BullMQ worker.
  */
-export async function ingestDocument(documentId: string): Promise<number> {
+export async function ingestDocument(
+  documentId: string,
+  /**
+   * `project: false` commits the Postgres side and the outbox row but skips the inline
+   * projection, leaving the document exactly as a crash between commit and projection would —
+   * INDEXING, with the update durably owed. Used by eval/consistency-check.ts to exercise that
+   * recovery path; production callers always project.
+   */
+  opts: { project?: boolean } = {},
+): Promise<number> {
   const doc = await prisma.document.findUnique({
     where: { id: documentId },
     select: {
@@ -59,27 +72,22 @@ export async function ingestDocument(documentId: string): Promise<number> {
         )
       `;
     }
+    // New content → new version. The document does NOT become INDEXED here: it is only ready
+    // once the keyword leg actually has it, which the projector decides. Marking it ready at
+    // this point was how a failed mirror produced a document that claimed to be indexed but
+    // could not be found by keyword search.
     await tx.document.update({
       where: { id: documentId },
-      data: { status: "INDEXED", indexedAt: new Date() },
+      data: { contentVersion: { increment: 1 }, status: "INDEXING" },
     });
+    // Committed with the chunks, so the projection can never be silently skipped.
+    await enqueueProjection(tx, documentId, "ingest:content");
   });
 
-  // Mirror into Elasticsearch after Postgres commits. Refresh so the chunks are
-  // immediately searchable (worker throughput isn't latency-critical).
-  await ensureChunkIndex();
-  await deleteDocumentChunks(documentId, undefined, true);
-  const acl = aclTokens(doc); // denormalise the document's ACL onto every chunk
-  const esChunks: EsChunk[] = chunks.map((c, i) => ({
-    chunkId: ids[i],
-    documentId,
-    chunkIndex: c.index,
-    title: doc.title,
-    fileType: doc.fileType,
-    content: c.content,
-    acl,
-  }));
-  await indexChunks(esChunks, undefined, "wait_for");
+  // Fast path: project immediately so the document is searchable when the worker reports done.
+  // The ACL is re-read inside projectDocument, AFTER the slow embedding above — which is what
+  // stops a revoke landing mid-ingest from being overwritten by a stale snapshot.
+  if (opts.project !== false) await projectNow(documentId);
 
   return chunks.length;
 }

@@ -1,36 +1,517 @@
 [
-  { "q": "mobile editor latency", "relevant": ["mobile-editor-latency.md"], "kind": "exact" },
-  { "q": "typing feels laggy on my phone", "relevant": ["mobile-editor-latency.md"], "kind": "paraphrase" },
-  { "q": "ERR_AUTH_401", "relevant": ["auth-token-expiry.md"], "kind": "exact" },
-  { "q": "my login session keeps expiring", "relevant": ["auth-token-expiry.md"], "kind": "paraphrase" },
-  { "q": "ERR_TIMEOUT_504", "relevant": ["search-timeout.md"], "kind": "exact" },
-  { "q": "search requests time out under heavy load", "relevant": ["search-timeout.md"], "kind": "paraphrase" },
-  { "q": "database connection pool exhausted", "relevant": ["db-connection-pool.md"], "kind": "exact" },
-  { "q": "queries hang when too many users connect at once", "relevant": ["db-connection-pool.md"], "kind": "paraphrase" },
-  { "q": "resize uploaded images", "relevant": ["image-upload-pipeline.md"], "kind": "exact" },
-  { "q": "generate small previews for photos", "relevant": ["image-upload-pipeline.md"], "kind": "paraphrase" },
-  { "q": "dark mode", "relevant": ["dark-mode-theming.md"], "kind": "exact" },
-  { "q": "follow the system color scheme automatically", "relevant": ["dark-mode-theming.md"], "kind": "paraphrase" },
-  { "q": "retry failed webhooks", "relevant": ["webhook-retries.md"], "kind": "exact" },
-  { "q": "avoid processing the same event twice", "relevant": ["webhook-retries.md"], "kind": "paraphrase" },
-  { "q": "rate limiting", "relevant": ["rate-limiting.md"], "kind": "exact" },
-  { "q": "client got too many requests 429", "relevant": ["rate-limiting.md"], "kind": "paraphrase" },
-  { "q": "export a huge table to csv", "relevant": ["csv-export.md"], "kind": "exact" },
-  { "q": "let several people edit one document together", "relevant": ["realtime-collab.md"], "kind": "paraphrase" },
-  { "q": "merge conflicting edits without losing changes", "relevant": ["realtime-collab.md"], "kind": "paraphrase" },
-  { "q": "difference between keyword and semantic search", "relevant": ["fulltext-vs-vector.md"], "kind": "exact" },
-  { "q": "max_connections", "relevant": ["postgres-config-tuning.md"], "kind": "exact" },
-  { "q": "shared_buffers and work_mem", "relevant": ["postgres-config-tuning.md"], "kind": "exact" },
-  { "q": "tune postgres memory settings", "relevant": ["postgres-config-tuning.md"], "kind": "paraphrase" },
-  { "q": "invoice.payment_failed", "relevant": ["billing-webhooks.md"], "kind": "exact" },
-  { "q": "the customer's card was declined", "relevant": ["failed-payments.md"], "kind": "paraphrase" },
-  { "q": "ERR_QUOTA_4096", "relevant": ["error-code-reference.md"], "kind": "exact" },
-  { "q": "ERR_DB_5002", "relevant": ["error-code-reference.md"], "kind": "exact" },
-  { "q": "what happens when a payment fails?", "relevant": ["failed-payments.md", "billing-webhooks.md"], "kind": "paraphrase" },
-  { "q": "memory issues and stalls", "relevant": ["db-connection-pool.md", "postgres-config-tuning.md"], "kind": "paraphrase" },
-  { "q": "storage space full", "relevant": ["storage-limits.md"], "kind": "paraphrase" },
-  { "q": "ERR_QUOTA_4096 storage", "relevant": ["error-code-reference.md", "storage-limits.md"], "kind": "exact" },
-  { "q": "how to deploy this in AWS", "relevant": [], "kind": "paraphrase" },
-  { "q": "what does ERR_NET_5200 mean", "relevant": ["error-code-reference.md"], "kind": "exact" },
-  { "q": "can I use a custom theme color", "relevant": ["dark-mode-theming.md"], "kind": "paraphrase" }
+  {
+    "q": "mobile editor latency",
+    "relevant": [
+      "mobile-editor-latency.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "typing feels laggy on my phone",
+    "relevant": [
+      "mobile-editor-latency.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_AUTH_401",
+    "relevant": [
+      "auth-token-expiry.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "my login session keeps expiring",
+    "relevant": [
+      "auth-token-expiry.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_TIMEOUT_504",
+    "relevant": [
+      "search-timeout.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "search requests time out under heavy load",
+    "relevant": [
+      "search-timeout.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "database connection pool exhausted",
+    "relevant": [
+      "db-connection-pool.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "queries hang when too many users connect at once",
+    "relevant": [
+      "db-connection-pool.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "resize uploaded images",
+    "relevant": [
+      "image-upload-pipeline.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "generate small previews for photos",
+    "relevant": [
+      "image-upload-pipeline.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "dark mode",
+    "relevant": [
+      "dark-mode-theming.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "follow the system color scheme automatically",
+    "relevant": [
+      "dark-mode-theming.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "retry failed webhooks",
+    "relevant": [
+      "webhook-retries.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "avoid processing the same event twice",
+    "relevant": [
+      "webhook-retries.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "rate limiting",
+    "relevant": [
+      "rate-limiting.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "client got too many requests 429",
+    "relevant": [
+      "rate-limiting.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "export a huge table to csv",
+    "relevant": [
+      "csv-export.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "let several people edit one document together",
+    "relevant": [
+      "realtime-collab.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "merge conflicting edits without losing changes",
+    "relevant": [
+      "realtime-collab.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "difference between keyword and semantic search",
+    "relevant": [
+      "fulltext-vs-vector.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "max_connections",
+    "relevant": [
+      "postgres-config-tuning.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "shared_buffers and work_mem",
+    "relevant": [
+      "postgres-config-tuning.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "tune postgres memory settings",
+    "relevant": [
+      "postgres-config-tuning.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "invoice.payment_failed",
+    "relevant": [
+      "billing-webhooks.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "the customer's card was declined",
+    "relevant": [
+      "failed-payments.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_QUOTA_4096",
+    "relevant": [
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_DB_5002",
+    "relevant": [
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "what happens when a payment fails?",
+    "relevant": [
+      "failed-payments.md",
+      "billing-webhooks.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "memory issues and stalls",
+    "relevant": [
+      "db-connection-pool.md",
+      "postgres-config-tuning.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "storage space full",
+    "relevant": [
+      "storage-limits.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "ERR_QUOTA_4096 storage",
+    "relevant": [
+      "error-code-reference.md",
+      "storage-limits.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "how to deploy this in AWS",
+    "relevant": [],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "what does ERR_NET_5200 mean",
+    "relevant": [
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "can I use a custom theme color",
+    "relevant": [
+      "dark-mode-theming.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_AUTH_4011",
+    "relevant": [
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_DB_5001 deadlock",
+    "relevant": [
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "ERR_RATE_4029",
+    "relevant": [
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "token bucket",
+    "relevant": [
+      "rate-limiting.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "Retry-After header",
+    "relevant": [
+      "rate-limiting.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "work_mem",
+    "relevant": [
+      "postgres-config-tuning.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "idempotency key",
+    "relevant": [
+      "webhook-retries.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "invoice.paid",
+    "relevant": [
+      "billing-webhooks.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "refresh token 30 days",
+    "relevant": [
+      "auth-token-expiry.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "conflict-free replicated data type",
+    "relevant": [
+      "realtime-collab.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "semantic color tokens",
+    "relevant": [
+      "dark-mode-theming.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "thumbnail for list views",
+    "relevant": [
+      "image-upload-pipeline.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "exponential backoff retry",
+    "relevant": [
+      "search-timeout.md",
+      "webhook-retries.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "HTTP 429 Too Many Requests",
+    "relevant": [
+      "rate-limiting.md"
+    ],
+    "kind": "exact",
+    "split": "tune"
+  },
+  {
+    "q": "storage quota exceeded",
+    "relevant": [
+      "storage-limits.md",
+      "error-code-reference.md"
+    ],
+    "kind": "exact",
+    "split": "test"
+  },
+  {
+    "q": "why am I signed out after a short while",
+    "relevant": [
+      "auth-token-expiry.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "everything slowed down when lots of people joined",
+    "relevant": [
+      "db-connection-pool.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "lookups give up when the system is busy",
+    "relevant": [
+      "search-timeout.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "shrink pictures automatically after upload",
+    "relevant": [
+      "image-upload-pipeline.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "match the phone's night appearance",
+    "relevant": [
+      "dark-mode-theming.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "stop delivering the same notification twice",
+    "relevant": [
+      "webhook-retries.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "throttle clients that call us too often",
+    "relevant": [
+      "rate-limiting.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "download millions of rows without running out of memory",
+    "relevant": [
+      "csv-export.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "two people typing in the same file simultaneously",
+    "relevant": [
+      "realtime-collab.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "when is matching words better than matching meaning",
+    "relevant": [
+      "fulltext-vs-vector.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "help a brand new team get set up",
+    "relevant": [
+      "onboarding-checklist.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "the payment did not go through",
+    "relevant": [
+      "failed-payments.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "subscription paused after repeated billing problems",
+    "relevant": [
+      "failed-payments.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  },
+  {
+    "q": "I am running out of room in my workspace",
+    "relevant": [
+      "storage-limits.md"
+    ],
+    "kind": "paraphrase",
+    "split": "test"
+  },
+  {
+    "q": "how much memory should the database use for sorting",
+    "relevant": [
+      "postgres-config-tuning.md"
+    ],
+    "kind": "paraphrase",
+    "split": "tune"
+  }
 ]

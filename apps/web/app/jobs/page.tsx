@@ -39,6 +39,7 @@ function fmt(iso: string | null): string {
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -57,6 +58,21 @@ export default function JobsPage() {
     const t = setInterval(load, 2000);
     return () => clearInterval(t);
   }, [load]);
+
+  const retry = async (job: Job) => {
+    setRetrying(job.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, { method: "POST" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? `Retry failed (${res.status})`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Retry failed");
+    } finally {
+      setRetrying(null);
+    }
+  };
 
   return (
     <div>
@@ -96,6 +112,15 @@ export default function JobsPage() {
                 <span className={`rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${COLOR[j.status]}`}>
                   {j.status}
                 </span>
+                {j.status === "FAILED" && j.document && (
+                  <button
+                    onClick={() => retry(j)}
+                    disabled={retrying === j.id}
+                    className="rounded px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 disabled:opacity-50"
+                  >
+                    {retrying === j.id ? "Retrying…" : "Retry"}
+                  </button>
+                )}
               </div>
             </li>
           ))}

@@ -23,6 +23,34 @@ interface Doc {
   canDelete: boolean;
   grants?: Grant[];
 }
+interface History {
+  document: {
+    id: string;
+    title: string;
+    fileName: string;
+    status: string;
+    aclVersion: number;
+    contentVersion: number;
+    chunkCount: number;
+  };
+  jobs: {
+    id: string;
+    status: string;
+    error: string | null;
+    createdAt: string;
+    startedAt: string | null;
+    completedAt: string | null;
+  }[];
+  projections: {
+    id: string;
+    reason: string;
+    status: string;
+    attempts: number;
+    lastError: string | null;
+    createdAt: string;
+    processedAt: string | null;
+  }[];
+}
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -50,6 +78,7 @@ export default function DocumentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [history, setHistory] = useState<History | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -89,6 +118,18 @@ export default function DocumentsPage() {
       setError(e instanceof Error ? e.message : "Delete failed");
     } finally {
       setDeleting(null);
+    }
+  };
+
+  const openHistory = async (doc: Doc) => {
+    setError(null);
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/history`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? `History failed (${res.status})`);
+      setHistory(json as History);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "History failed");
     }
   };
 
@@ -166,6 +207,12 @@ export default function DocumentsPage() {
                         {expanded === d.id ? "Close" : "Share"}
                       </button>
                     )}
+                    <button
+                      onClick={() => openHistory(d)}
+                      className="rounded px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800"
+                    >
+                      History
+                    </button>
                     {d.canDelete && (
                       <button
                         onClick={() => remove(d)}
@@ -185,6 +232,62 @@ export default function DocumentsPage() {
             );
           })}
         </ul>
+      )}
+
+      {history && (
+        <div className="fixed inset-0 z-50 bg-black/20 px-4 py-8" onClick={() => setHistory(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="mx-auto max-h-full max-w-2xl overflow-auto rounded-lg bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold">{history.document.title}</h2>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  content v{history.document.contentVersion} · ACL v{history.document.aclVersion} · {history.document.chunkCount} chunks
+                </p>
+              </div>
+              <button
+                onClick={() => setHistory(null)}
+                className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+              >
+                Close
+              </button>
+            </div>
+
+            <h3 className="mt-5 text-sm font-semibold">Ingestion attempts</h3>
+            <ul className="mt-2 divide-y divide-neutral-100 rounded border border-neutral-200">
+              {history.jobs.map((j) => (
+                <li key={j.id} className="px-3 py-2 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <span className="font-medium">{j.status}</span>
+                    <span className="text-neutral-400">{formatDate(j.createdAt)}</span>
+                  </div>
+                  {j.error && <p className="mt-1 text-red-600">{j.error}</p>}
+                </li>
+              ))}
+              {history.jobs.length === 0 && <li className="px-3 py-2 text-xs text-neutral-400">No jobs.</li>}
+            </ul>
+
+            <h3 className="mt-5 text-sm font-semibold">Projection events</h3>
+            <ul className="mt-2 divide-y divide-neutral-100 rounded border border-neutral-200">
+              {history.projections.map((p) => (
+                <li key={p.id} className="px-3 py-2 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <span className="font-medium">{p.reason}</span>
+                    <span className="text-neutral-400">{p.status} · {p.attempts} attempt{p.attempts === 1 ? "" : "s"}</span>
+                  </div>
+                  {p.lastError && <p className="mt-1 text-red-600">{p.lastError}</p>}
+                </li>
+              ))}
+              {history.projections.length === 0 && (
+                <li className="px-3 py-2 text-xs text-neutral-400">No projection events.</li>
+              )}
+            </ul>
+          </div>
+        </div>
       )}
     </div>
   );

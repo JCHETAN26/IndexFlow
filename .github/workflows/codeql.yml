@@ -1,0 +1,43 @@
+name: CodeQL
+
+# Static analysis for the security surfaces this project cares about — injection, unsafe
+# deserialisation, missing authorization patterns. Runs on PRs, on main, and weekly so newly
+# published rules are applied to code that has not changed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds the lower-severity security rules; worth the extra runtime
+          # on a project whose headline claim is permission-aware retrieval.
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

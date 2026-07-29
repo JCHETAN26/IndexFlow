@@ -27,6 +27,23 @@ interface Citation {
   fileType: string;
 }
 
+interface Passage {
+  id: string;
+  chunkIndex: number;
+  content: string;
+  tokenCount: number;
+  document: {
+    id: string;
+    title: string;
+    fileName: string;
+    fileType: string;
+    status: string;
+    aclVersion: number;
+    contentVersion: number;
+    chunkCount: number;
+  };
+}
+
 interface AnswerState {
   text: string;
   citations: Citation[];
@@ -80,6 +97,8 @@ export default function SearchPage() {
   const [selected, setSelected] = useState(-1);
   const [answer, setAnswer] = useState<AnswerState | null>(null);
   const [answering, setAnswering] = useState(false);
+  const [passage, setPassage] = useState<Passage | null>(null);
+  const [passageError, setPassageError] = useState<string | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const answerAbort = useRef<AbortController | null>(null);
@@ -179,12 +198,25 @@ export default function SearchPage() {
     if (q.trim()) runSearch(q, next);
   };
 
-  // Jump to the result card backing a citation (if it's in the current result set).
+  const openPassage = async (chunkId: string) => {
+    setPassageError(null);
+    try {
+      const res = await fetch(`/api/chunks/${chunkId}`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? `Passage failed (${res.status})`);
+      setPassage(json as Passage);
+    } catch (e) {
+      setPassageError(e instanceof Error ? e.message : "Passage failed");
+    }
+  };
+
+  // Jump to the result card backing a citation and open its exact passage.
   const onCite = (marker: number) => {
     const cite = answer?.citations.find((c) => c.marker === marker);
     if (!cite || !data) return;
     const idx = data.results.findIndex((r) => r.chunkId === cite.chunkId);
     if (idx >= 0) setSelected(idx);
+    void openPassage(cite.chunkId);
   };
 
   // Keep the keyboard-selected result scrolled into view.
@@ -295,6 +327,8 @@ export default function SearchPage() {
         </div>
       )}
 
+      {passageError && <p className="mt-3 text-sm text-red-600">{passageError}</p>}
+
       <div className="mt-3 flex items-center justify-between">
         <div className="h-5 text-xs text-neutral-500">
           {loading && "Searching…"}
@@ -337,9 +371,46 @@ export default function SearchPage() {
               className="mt-2 text-sm leading-relaxed text-neutral-600"
               dangerouslySetInnerHTML={{ __html: r.snippet }}
             />
+            <button
+              onClick={() => openPassage(r.chunkId)}
+              className="mt-3 rounded px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+            >
+              View exact passage
+            </button>
           </li>
         ))}
       </ul>
+
+      {passage && (
+        <div className="fixed inset-0 z-50 bg-black/20 px-4 py-8" onClick={() => setPassage(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="mx-auto max-h-full max-w-2xl overflow-auto rounded-lg bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold">{passage.document.title}</h2>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  {passage.document.fileName} · passage {passage.chunkIndex + 1} of {passage.document.chunkCount} · content v
+                  {passage.document.contentVersion} · ACL v{passage.document.aclVersion}
+                </p>
+              </div>
+              <button
+                onClick={() => setPassage(null)}
+                className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+              >
+                Close
+              </button>
+            </div>
+            <pre className="mt-4 whitespace-pre-wrap rounded border border-neutral-200 bg-neutral-50 p-4 text-sm leading-relaxed text-neutral-800">
+              {passage.content}
+            </pre>
+            <p className="mt-3 text-xs text-neutral-400">{passage.tokenCount} estimated tokens</p>
+          </div>
+        </div>
+      )}
 
       {!loading && data && data.results.length === 0 && (
         <div className="mt-10 rounded-lg border border-dashed border-neutral-300 px-6 py-12 text-center">

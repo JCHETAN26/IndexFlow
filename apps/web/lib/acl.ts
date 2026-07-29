@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { updateDocumentAcl } from "@/lib/es";
+import { bumpAclVersion, projectNow } from "@/lib/outbox";
 
 /**
  * Permission model for permission-aware search. A document is visible to a viewer if
@@ -67,6 +67,41 @@ export function documentVisibilityWhere(viewer: Viewer): Prisma.DocumentWhereInp
   };
 }
 
+/**
+ * The single read-authorization gate for a specific document.
+ *
+ * Retrieval filters visibility *in the query* (ES `terms`, SQL predicate), which covers search
+ * and RAG. Anything that reaches a document by id instead — file download, metadata by id — has
+ * no such filter and MUST call this. It is built on `documentVisibilityWhere`, so this gate and
+ * the list/search surfaces can never drift apart: one rule, one place.
+ */
+export async function canReadDocument(viewer: Viewer, documentId: string): Promise<boolean> {
+  const hit = await prisma.document.findFirst({
+    where: { AND: [{ id: documentId }, documentVisibilityWhere(viewer)] },
+    select: { id: true },
+  });
+  return hit !== null;
+}
+
+/** Thrown by the assert helpers below; carries the HTTP status a route should return. */
+export class AccessError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "AccessError";
+  }
+}
+
+/**
+ * Assert the viewer may read the document, else throw a 404 — deliberately NOT 403.
+ * A 403 on an existing-but-forbidden document confirms the document exists, which leaks
+ * membership of the corpus to anyone probing ids. Unreadable and absent look identical.
+ */
+export async function assertCanRead(viewer: Viewer, documentId: string): Promise<void> {
+  if (!(await canReadDocument(viewer, documentId))) {
+    throw new AccessError(404, "Document not found.");
+  }
+}
+
 /** The minimal document shape needed to compute its ACL tokens for indexing. */
 export interface AclDocument {
   isPublic: boolean;
@@ -100,10 +135,22 @@ export async function documentAclTokens(documentId: string): Promise<string[]> {
 }
 
 /**
- * Push a document's current ACL (from Postgres) into its Elasticsearch chunks. Call after
- * changing ownership, `isPublic`, or grants so the keyword index stays consistent with the
- * source of truth. `refresh` waits for the update to be searchable (used by seeds/tests).
+ * Record that a document's ACL changed and bring the keyword index in line.
+ *
+ * Call after changing ownership, `isPublic`, or grants. This bumps the document's `aclVersion`
+ * and writes an outbox event in one transaction, then projects inline so the change is visible
+ * immediately; if that inline attempt fails, the committed outbox row guarantees the drainer
+ * picks it up.
+ *
+ * It used to write Elasticsearch directly with `updateDocumentAcl`, which had two failure modes:
+ * an update-by-query matched nothing when the document's chunks did not exist yet (so a revoke
+ * during an in-flight index was simply lost), and a failed write left no record that ES still
+ * owed an update. The `refresh` parameter is retained for call-site compatibility; projection is
+ * always refresh-synchronous now.
  */
-export async function syncDocumentAcl(documentId: string, refresh = false): Promise<void> {
-  await updateDocumentAcl(documentId, await documentAclTokens(documentId), undefined, refresh);
+export async function syncDocumentAcl(documentId: string, _refresh = false): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await bumpAclVersion(tx, documentId);
+  });
+  await projectNow(documentId);
 }

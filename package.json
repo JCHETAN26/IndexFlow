@@ -2,6 +2,8 @@
   "name": "indexflow",
   "version": "0.0.1",
   "private": true,
+  "//packageManager": "Pinned so corepack in the Docker build resolves the same pnpm as local and CI. Without it corepack takes the latest (10.x), which fails the install on unapproved build scripts.",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "pnpm --filter @indexflow/web dev",
     "worker": "pnpm --filter @indexflow/web worker",

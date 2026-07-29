@@ -13,6 +13,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
+const SEED_TOKEN = process.env.SEED_TOKEN ?? "";
 const CORPUS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "seed", "corpus");
 
 const MIME: Record<string, string> = {
@@ -37,7 +38,14 @@ async function upload(fileName: string, bytes: Buffer): Promise<string> {
   const ext = fileName.split(".").pop()!.toLowerCase();
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(bytes)], { type: MIME[ext] ?? "application/octet-stream" }), fileName);
-  const res = await fetch(`${BASE_URL}/api/documents/upload`, { method: "POST", body: form });
+  const res = await fetch(`${BASE_URL}/api/documents/upload`, {
+    method: "POST",
+    body: form,
+    // Upload requires authentication. The seed script has no browser session, so it presents
+    // the shared secret instead; the route maps it to the demo user and marks the document
+    // public. Set SEED_TOKEN (16+ chars) in apps/web/.env before running.
+    headers: { "x-seed-token": SEED_TOKEN },
+  });
   if (res.status !== 202) {
     throw new Error(`upload ${fileName} failed (${res.status}): ${await res.text()}`);
   }
@@ -47,7 +55,9 @@ async function upload(fileName: string, bytes: Buffer): Promise<string> {
 async function waitForJob(jobId: string, timeoutMs = 120_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await fetch(`${BASE_URL}/api/jobs/${jobId}`);
+    const res = await fetch(`${BASE_URL}/api/jobs/${jobId}`, {
+      headers: { "x-seed-token": SEED_TOKEN },
+    });
     if (res.ok) {
       const { status, error } = (await res.json()) as { status: string; error: string | null };
       if (status === "COMPLETED") return status;
@@ -59,6 +69,13 @@ async function waitForJob(jobId: string, timeoutMs = 120_000): Promise<string> {
 }
 
 async function main() {
+  if (SEED_TOKEN.length < 16) {
+    throw new Error(
+      "SEED_TOKEN must be set to at least 16 characters (in apps/web/.env) — uploads require " +
+        "authentication and the seed script uses this shared secret. " +
+        "Generate one with: openssl rand -base64 24",
+    );
+  }
   const files = (await readdir(CORPUS_DIR)).filter((f) => /\.(md|txt|pdf)$/i.test(f)).sort();
   if (files.length === 0) {
     console.log("No seed files found in seed/corpus. Nothing to do.");
