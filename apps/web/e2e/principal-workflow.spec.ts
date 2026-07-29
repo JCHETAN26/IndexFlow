@@ -82,6 +82,12 @@ test.describe("guest principal", () => {
   });
 
   test("can run the live retrieval evaluation", async ({ page }) => {
+    // The per-test timeout caps every assertion inside it, so the 180s budget below was
+    // unreachable under the config's 60s default: the test was killed at 60s while the eval was
+    // still seeding and embedding, and the assertion never got the room its comment promised.
+    // Passing at all depended on the runner finishing under 60s, which is why this failed
+    // intermittently in CI and always passed on a fast machine.
+    test.setTimeout(240_000);
     await page.goto("/eval");
     await page.getByRole("button", { name: "Run evaluation", exact: true }).click();
     // The harness seeds, embeds and scores a corpus; give it room.
