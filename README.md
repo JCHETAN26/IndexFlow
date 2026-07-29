@@ -87,8 +87,9 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 
 | What | Command | Result |
 |---|---|---|
-| Retrieval quality | `pnpm --filter @indexflow/web eval` | held-out: semantic **MRR 0.94**, hybrid 0.85, keyword 0.73 |
-| Answer groundedness | `pnpm --filter @indexflow/web eval:rag` | LLM-judged: faithfulness **98%**, relevance 100%, citations 100%, refusal **92%** |
+| Retrieval quality | `pnpm --filter @indexflow/web eval` | held-out: semantic **MRR 0.94**, hybrid+rerank 0.90, hybrid 0.85, keyword 0.73 |
+| Answer groundedness | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%** (human-calibrated); relevance 100%, citations 100%\*, refusal **92%** (LLM-judged) |
+| Judge calibration | `pnpm --filter @indexflow/web judge:calibrate` | 40 blind human labels: **90%** agreement, κ **0.29** — \*citation judge is lenient |
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9** pass, no leaks across either leg |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** pass |
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** pass — by-id fetch/delete/upload and job listings are gated |
@@ -98,8 +99,8 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 
 Retrieval is measured on **34 held-out queries**; the blend weight is chosen on a separate
 30-query tuning split, so the numbers are not scored on the data that selected them. Generation
-uses 20 answerable + 12 unanswerable questions and is still waiting on a human audit of the
-LLM judges. 17 documents, 8 GB Mac, local Docker.
+uses 20 answerable + 12 unanswerable questions, and its judges have now been audited against 40
+blind human labels — see the caveat below. 17 documents, local Docker.
 
 **Hybrid does not beat both single strategies, and this README used to claim it did.** On held-out
 queries semantic alone leads (MRR 0.94 vs hybrid 0.85). Hybrid is best for *exact-match* queries
@@ -109,10 +110,19 @@ the selection criterion moved it 0.86 → 0.85, so this is not an artifact of ho
 picked. Reasoning in `RESULTS.md`. Note the interval: 0.85 [0.75–0.94] — gaps of a few points on
 34 queries are noise, not a ranking.
 
-**Reranking is implemented but off by default.** The captured run reports `hybrid+rerank` at MRR
-0.73, below plain hybrid's 0.85, but that run used an earlier pipeline wrapper that did not pass
-query/passage pairs correctly. The code now uses a sequence-classification cross-encoder with
-`text_pair`; re-run `pnpm --filter @indexflow/web eval` before quoting reranker quality.
+**Reranking is implemented but off by default.** It now scores MRR **0.90**, above plain hybrid's
+0.85 and recovering most of hybrid's paraphrase deficit (0.83 → 0.88), but still short of semantic
+alone at 0.94. An earlier capture reported 0.73; that run used a pipeline wrapper that did not pass
+query/passage pairs, so it emitted a constant score for every candidate and ordered them
+arbitrarily. The code now uses a sequence-classification cross-encoder with `text_pair`, and the
+numbers above are the re-run — regressions fell from 13 queries to 4.
+
+**The citation judge is lenient, so treat citations 100% as an upper bound.** A blind 40-row human
+audit put `bespoke-minicheck` at 100% agreement on faithfulness (κ = 1.00), but `qwen2.5` passed
+all 8 sampled citation rows where the human rejected 2. The audit also found one refusal the judge
+scored wrong in the *strict* direction, meaning 92% refusal correctness is if anything understated.
+Overall agreement 90%, κ 0.29. Full breakdown, including why three per-surface κ values read 0.00
+for statistical rather than quality reasons, is in `RESULTS.md`.
 
 ## Limitations
 
@@ -125,11 +135,14 @@ Evidence the system works on a small labelled fixture set, not production perfor
   added paraphrases were written with minimal lexical overlap with their sources. That is a fair
   test of paraphrase handling but it shifts the benchmark toward semantic retrieval, so these
   numbers are not comparable to the earlier ones.
-- **Three 100% scores mean "no failures at this size"**, not "solved". The generation eval's two
-  actual failures are printed in `RESULTS.md` rather than averaged away. The saved RAG report can
-  now be exported to a blind human audit sheet with `pnpm --filter @indexflow/web judge:export`,
-  then scored with `pnpm --filter @indexflow/web judge:calibrate`; no human labels have been
-  recorded yet.
+- **Three 100% scores mean "no failures at this size"**, not "solved" — and one of them is worse
+  than that. The generation eval's two actual failures are printed in `RESULTS.md` rather than
+  averaged away, and a blind 40-row human audit (`judge:export` → `judge:calibrate`) showed the
+  citation judge passing rows a human rejected. Citations 100% is an upper bound, not a result.
+  Faithfulness is the one generation metric that survived the audit intact (κ = 1.00).
+- **The audit itself is small.** 40 rows, of which only 2 carried a minority-class judge verdict —
+  the report contained no more. Kappa draws its power from disagreement opportunities, so this
+  audit can catch a lenient judge (it did) but cannot certify a good one.
 - **The latency benchmark uses synthetic vectors** and a fixed vocabulary. It measures latency,
   not quality, at scale. Its "index throughput" is bulk-load speed, not real ingestion.
 - **The generator is a 3B model** over 6 contexts. A larger model would score differently.

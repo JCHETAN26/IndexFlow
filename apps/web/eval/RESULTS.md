@@ -19,12 +19,13 @@ then run the commands below in order. The generation eval takes ~30 minutes on t
 
 | Eval | Command | Headline | Gate |
 |---|---|---|---|
-| Retrieval quality (held-out) | `pnpm --filter @indexflow/web eval` | semantic **MRR 0.94**; hybrid 0.85; keyword 0.73 | PASS |
+| Retrieval quality (held-out) | `pnpm --filter @indexflow/web eval` | semantic **MRR 0.94**; hybrid+rerank 0.90; hybrid 0.85; keyword 0.73 | PASS |
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9**, no leaks | PASS |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** | PASS |
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** | PASS |
 | Cross-store consistency | `pnpm --filter @indexflow/web consistency:check` | **8/8** | PASS |
-| Generation quality | `pnpm --filter @indexflow/web eval:rag` | LLM-judged: faithfulness **98%**, refusal **92%** | PASS |
+| Generation quality | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%** (human-calibrated, κ 1.00); refusal **92%** (LLM-judged) | PASS |
+| Judge calibration | `pnpm --filter @indexflow/web judge:calibrate` | 40 blind human labels: **90%** agreement, κ **0.29**; citation judge lenient | n/a |
 | Adversarial security | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** disclosures, **0/10** injection leaks | PASS |
 | Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks | n/a |
 
@@ -34,7 +35,7 @@ then run the commands below in order. The generation eval takes ~30 minutes on t
 
 ```
 COMMAND:  pnpm --filter @indexflow/web eval
-RUN:      2026-07-26 (IF-3 dataset: held-out split, expanded queries)
+RUN:      2026-07-28 (re-run after the query/passage reranking fix in 8d9a186)
 EXIT:     0
 ```
 
@@ -58,7 +59,7 @@ Strategy          MRR   R@1   R@3   R@5   P@3   nDCG@5
 keyword          0.73    60%    76%    79%    28%    72%
 semantic         0.94    85%    97%    97%    36%    95%
 hybrid           0.85    71%    94%    97%    35%    88%
-hybrid+rerank    0.73    60%    76%    79%    28%    72%
+hybrid+rerank    0.90    81%    94%    97%    35%    92%
 ────────────────────────────────────────────────────────────────────────────────
 held-out hybrid, with 95% bootstrap intervals:
   MRR  85% [75%–94%]     R@1  71% [56%–84%]     R@5  97% [91%–100%]
@@ -67,22 +68,21 @@ held-out hybrid, with 95% bootstrap intervals:
 by query kind (R@1 / MRR), whole set:
             keyword        semantic       hybrid         hybrid+rerank
 exact            92% / 0.98     86% / 0.94     95% / 1.00     92% / 0.98
-paraphrase       58% / 0.69     84% / 0.92     69% / 0.83     58% / 0.69
+paraphrase       58% / 0.69     84% / 0.92     69% / 0.83     80% / 0.88
 ────────────────────────────────────────────────────────────────────────────────
 hybrid weight sweep on the TUNING split (keyword weight → MRR), best = 0.55:
 0.00:0.93   0.05:0.94   0.10:0.96   0.15:0.96   0.20:0.97   0.25:0.97   0.30:0.98   0.35:0.98   0.40:0.98   0.45:0.98   0.50:0.98   0.55:0.98*  0.60:0.98   0.65:0.98   0.70:0.98   0.75:0.98   0.80:0.98   0.85:0.96   0.90:0.95   0.95:0.95   1.00:0.95 
 ────────────────────────────────────────────────────────────────────────────────
-Reranker Regressions (13 queries) — first two shown:
+Reranker Regressions (4 queries) — first two shown:
   Query: "queries hang when too many users connect at once"
   Expected: db-connection-pool.md
-  Ranks: Hybrid #2 -> Reranked #5
-  Scores: KW=2.91 / SM=0.56 / Rerank=1.00
+  Ranks: Hybrid #2 -> Reranked #3
+  Scores: KW=2.91 / SM=0.56 / Rerank=-4.53
   Analysis: Reranker preferred another document more
 
-  Query: "retry failed webhooks"
-  Expected: webhook-retries.md
+  Query: "memory issues and stalls"
+  Expected: db-connection-pool.md
   Ranks: Hybrid #1 -> Reranked #2
-  Scores: KW=4.52 / SM=0.61 / Rerank=1.00
   Analysis: Reranker preferred another document more
 
   …
@@ -99,10 +99,17 @@ quality gate:
 Quality gate passed. ✓
 ```
 
-> **Historical reranker caveat:** this captured `hybrid+rerank` run used an earlier
-> text-classification pipeline wrapper that did not pass query/passage pairs correctly. The code
-> now uses `AutoTokenizer` + `AutoModelForSequenceClassification` with `text_pair` and full chunk
-> content. Re-run `pnpm --filter @indexflow/web eval` before quoting reranker quality.
+> **Reranker caveat — now resolved.** The previously captured `hybrid+rerank` run used an earlier
+> text-classification pipeline wrapper that did not pass query/passage pairs correctly, and
+> reported MRR **0.73** with 13 regressions. The code now uses `AutoTokenizer` +
+> `AutoModelForSequenceClassification` with `text_pair` and full chunk content. The numbers above
+> are the re-run: MRR **0.90** (R@1 71% → 81%), regressions 13 → 4. The broken wrapper was
+> emitting a constant `Rerank=1.00` for every candidate, so ordering was effectively arbitrary —
+> the old row was an artifact, not a measurement.
+>
+> Reranking therefore does help hybrid (0.85 → 0.90), and recovers most of hybrid's paraphrase
+> deficit (0.83 → 0.88). It still does not overtake semantic alone at 0.94, so the conclusion
+> below is unaffected. It remains off by default.
 
 ### What changed, and why the headline claim did not survive
 
@@ -331,15 +338,49 @@ Generation quality gate passed. ✓
 The generator and both judges are different models, so there is no self-preference bias. The two
 failures are shown above rather than summarised away: one answer invented a `Retry-After`
 behaviour the source did not state, and one question that should have been refused was answered.
-Three 100% scores on a 20-question set mean "no failures observed at this size", not "solved".
+Three 100% scores on a 20-question set mean "no failures observed at this size", not "solved" —
+and the human audit below shows the citation 100% is additionally inflated by a lenient judge.
 
 ### Human judge calibration
 
-The generation scores above are still model-graded: `bespoke-minicheck` grades per-claim
-faithfulness, and `qwen2.5:7b` grades relevance, citation correctness, and refusal behaviour. A
-blind human-audit workflow now exists, but no human labels have been recorded yet.
+The generation scores above are model-graded: `bespoke-minicheck` grades per-claim faithfulness,
+and `qwen2.5:7b` grades relevance, citation correctness, and refusal behaviour. **40 rows have now
+been blind-labelled by a human and scored.** The result splits sharply by judge:
 
-After running `pnpm --filter @indexflow/web eval:rag`, the full report is saved to
+```
+COMMAND:  pnpm --filter @indexflow/web judge:calibrate
+RUN:      2026-07-28 (40 of 40 rows labelled, none blank)
+
+OVERALL (40 items)      agreement 90%   Cohen's κ 0.29   lenient 3, strict 1
+
+faithfulness  (bespoke-minicheck, 15 items)   agreement 100%   κ 1.00
+answer relevance     (qwen2.5, 11 items)      agreement  91%   κ 0.00   lenient 1
+citation correctness (qwen2.5,  8 items)      agreement  75%   κ 0.00   lenient 2
+refusal              (qwen2.5,  6 items)      agreement  83%   κ 0.00   strict  1
+```
+
+**Faithfulness is validated.** `bespoke-minicheck` agreed with the human on 15/15 rows including
+the minority class, κ = 1.00. The 98% faithfulness figure can be quoted as human-calibrated.
+
+**Citation correctness at 100% is not trustworthy.** `qwen2.5` passed all 8 sampled rows; the
+human rejected 2, and both rejections hold up on inspection — one answer's idempotency-key
+sentence carries no citation marker at all, and another places `[1]` where the causal explanation
+should be. This is a lenient judge inflating a published number, and it is exactly what the audit
+was built to detect. Quote citation correctness as **LLM-judged and known-lenient**, not 100%.
+
+**Read the three κ = 0.00 figures carefully.** `qwen2.5` returned an identical verdict for every
+row within each of those slices, so there is no variance to correlate and κ collapses to zero by
+construction regardless of judge quality. At n = 8–11 with a single disagreement, relevance and
+refusal are *uninformative* rather than damning. Citation is the exception: 8/8 passed against 2
+genuine failures is substantive evidence of leniency, not an artifact.
+
+**One disagreement runs the other way.** Row `r89` ("which CRDT algorithm?") — the model correctly
+declined, the human marked it a correct refusal, and `qwen2.5` marked it a failure. The generation
+run flagged the same question as "did NOT refuse". The refusal detector is wrong here, which means
+**92% refusal correctness is understated**, plausibly 12/12. The audit caught error in both
+directions, which is the better outcome than finding only leniency.
+
+To reproduce: after running `pnpm --filter @indexflow/web eval:rag`, the full report is saved to
 `.evalrun/rag-report.json`. Build the audit sheet with:
 
 ```
@@ -354,9 +395,9 @@ pnpm --filter @indexflow/web judge:calibrate
 ```
 
 The scorer reports raw agreement, Cohen's kappa, and lenient/strict disagreements overall and for
-each judge surface: faithfulness, answer relevance, citation correctness, and refusal. Until that
-audit is filled in, the generation metrics should be quoted as LLM-judged rather than
-human-calibrated.
+each judge surface: faithfulness, answer relevance, citation correctness, and refusal. Per the run
+above, faithfulness is human-calibrated; the three `qwen2.5` surfaces are not, and citation
+correctness in particular should carry its leniency caveat wherever it is quoted.
 
 ## 5. Adversarial security
 
@@ -447,7 +488,8 @@ HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s a
 
 - **This is local-fixture evaluation, not production traffic.** 34 queries over 17 documents for
   retrieval; 32 questions for generation. Retrieval has a proper tuning/held-out split. Generation
-  remains whole-set and LLM-judged until the human audit above is completed.
+  remains whole-set. Its faithfulness score is human-calibrated (κ = 1.00); its relevance,
+  citation, and refusal scores remain LLM-judged, with citation known to be lenient.
 - **The latency benchmark uses synthetic data**: random 384-dim unit vectors and text drawn from a
   fixed vocabulary, in an isolated `bench_chunks` table. It measures **latency, not quality**. BM25
   latency is real (real text, real index); vector *relevance* at those scales is not measured.
