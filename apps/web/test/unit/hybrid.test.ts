@@ -28,7 +28,7 @@ describe("blendHybrid", () => {
     //
     // Pinned rather than fixed: changing it changes retrieval ranking and therefore the
     // published MRR, which is a deliberate change to make and measure, not a side effect of
-    // adding tests. Recorded in improvements.txt.
+    // adding tests. Recorded in docs/ROADMAP.md.
     const out = blendHybrid([s("a", 9), s("b", 3)], []);
     expect(out.map((r) => r.id)).toEqual(["a"]);
 

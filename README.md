@@ -163,8 +163,8 @@ Evidence the system works on a small labelled fixture set, not production perfor
 ```
 apps/web/  app/ routes+UI · lib/ retrieve·hybrid·embed·es·acl·rag·outbox · eval/ harnesses
            + RESULTS.md (canonical numbers) · bench/ latency · worker/ ingestion + projector
-docs/      operations · ADRs · incident template · deterministic demo
-infra/     docker-compose + Dockerfile · improvements.txt: phased hardening roadmap
+docs/      operations · ADRs · incident template · deterministic demo · ROADMAP.md
+infra/     docker-compose + Dockerfile
 ```
 
 MIT licensed.
