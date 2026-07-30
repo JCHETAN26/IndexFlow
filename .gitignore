@@ -31,6 +31,11 @@ coverage/
 
 # personal job-prep notes — never commit
 docs/Project_Indexflow/
+# Untracked in d5a3660, but nothing stopped them being re-added. They reached the public
+# history once already (still readable at c0a2c5a); this is what keeps it from happening twice.
+bullets.txt
+bullet-samples.txt
+check123.txt
 
 # playwright
 apps/web/test-results/

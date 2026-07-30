@@ -40,4 +40,6 @@ pnpm seed
 - Search and answers enforce the same ACL rule on both retrieval legs.
 - Source passages are hydrated by id only after the document read gate passes.
 - Elasticsearch is a projection; Postgres remains the source of truth.
-- Generation metrics are LLM-judged until the blind human calibration sheet is labelled.
+- Generation metrics are model-graded, and the graders were themselves audited: 40 blind human
+  labels put faithfulness at 100% agreement (kappa 1.00) and exposed the citation judge as
+  lenient, so citations 100% is narrated as an upper bound rather than a result.
