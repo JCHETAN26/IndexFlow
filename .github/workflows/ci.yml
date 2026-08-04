@@ -77,8 +77,14 @@ jobs:
       # `python3 -m pip`, and the checker invoked as a plain step rather than through the pnpm
       # script: pnpm resolved a different interpreter from the one pip installed into, so the
       # module was missing at import despite a successful install.
+      # pytrec-eval-terrier is the maintained fork; the original pytrec_eval 0.5 sdist builds a
+      # wheel on 3.12 but the extension does not then import. Module name is the same.
       - name: Install pytrec_eval
-        run: python3 -m pip install pytrec_eval==0.5
+        run: python3 -m pip install pytrec-eval-terrier
+      - name: Show what was installed
+        run: |
+          python3 -m pip show -f pytrec-eval-terrier || true
+          python3 -c "import pytrec_eval, inspect; print('import ok:', pytrec_eval.__file__)" || true
       - name: Export rankings in TREC format
         run: pnpm --filter @indexflow/web eval:trec-export
       - name: Cross-check metrics against the reference implementation

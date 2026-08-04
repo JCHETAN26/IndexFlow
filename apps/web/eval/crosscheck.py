@@ -26,14 +26,15 @@ from pathlib import Path
 
 try:
     import pytrec_eval
-except ImportError:
+except ImportError as exc:
+    # Surface the real exception. A swallowed ImportError here cost a CI round trip: "not
+    # installed" and "installed but the extension will not load" need different fixes.
     sys.exit(
-        f"pytrec_eval is not importable from {sys.executable}\n"
-        f"  {sys.executable} -m pip install pytrec_eval\n"
+        f"cannot import pytrec_eval from {sys.executable}\n"
+        f"  underlying error: {exc!r}\n"
+        f"  install with: {sys.executable} -m pip install pytrec-eval-terrier\n"
         "It is a C extension, so it needs a working compiler. On a Mac without Xcode command "
-        "line tools this will not build -- run it in CI instead.\n"
-        "If pip reported success and this still fails, pip and python3 are different "
-        "interpreters; invoke this script with the same one pip installed into."
+        "line tools this will not build -- run it in CI instead."
     )
 
 MEASURES = {"recip_rank", "recall_1", "recall_3", "recall_5", "P_3", "ndcg_cut_5"}
