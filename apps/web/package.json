@@ -13,6 +13,8 @@
     "seed": "tsx --env-file=.env scripts/seed.ts",
     "eval": "tsx --env-file=.env eval/run.ts",
     "eval:rag": "tsx --env-file=.env eval/rag-run.ts",
+    "eval:trec-export": "tsx eval/trec-export.ts",
+    "eval:crosscheck": "tsx eval/trec-export.ts && python3 eval/crosscheck.py .evalrun/trec",
     "eval:adversarial": "tsx --env-file=.env eval/adversarial-run.ts",
     "acl:leak": "tsx --env-file=.env eval/acl-leak.ts",
     "acl:dao": "tsx --env-file=.env eval/dao-check.ts",

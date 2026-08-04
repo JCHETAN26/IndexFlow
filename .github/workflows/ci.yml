@@ -3,6 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Lets the evaluation jobs be run against a branch without opening a PR first — the
+  # cross-check and the eval harness need Linux services that a Mac dev box may not have.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -52,6 +55,35 @@ jobs:
       # Pure logic, no services — fast enough to be the first thing that fails.
       - name: Run unit tests
         run: pnpm --filter @indexflow/web test:unit
+
+  # The metric functions are from-scratch and decide whether the eval gate passes, so they are
+  # scored against NIST trec_eval (via pytrec_eval) on rankings whose values are known on paper.
+  # A C extension, so it cannot build on a dev Mac without Xcode — this job is where it runs.
+  metrics:
+    name: metrics cross-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install pytrec_eval
+        run: pip install pytrec_eval==0.5
+      - name: Cross-check metrics against the reference implementation
+        run: pnpm --filter @indexflow/web eval:crosscheck
+      - name: Upload TREC export
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trec-export
+          path: apps/web/.evalrun/trec/
 
   container:
     name: container build

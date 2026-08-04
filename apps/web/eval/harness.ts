@@ -20,6 +20,7 @@ import { embed, toVectorLiteral } from "../lib/embed";
 import { blendHybrid, type Scored } from "../lib/hybrid";
 import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsChunk } from "../lib/es";
 import { rerank } from "../lib/rerank";
+import { dedupDocs, mrr, ndcgAt, precisionAt, ranksForQuery, recallAt } from "./metrics";
 import corpus from "./corpus.json";
 import queries from "./queries.json";
 
@@ -166,17 +167,8 @@ function bootstrapCI(perQuery: number[], samples = BOOTSTRAP_SAMPLES): Interval 
 class Rollback extends Error {}
 
 // ── ranking helpers (pure) ────────────────────────────────────────────────
-function dedupDocs(ordered: { docId: string }[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const r of ordered) {
-    if (!seen.has(r.docId)) {
-      seen.add(r.docId);
-      out.push(r.docId);
-    }
-  }
-  return out;
-}
+// The metrics themselves live in eval/metrics.ts so they can be tested against hand-derived
+// expectations without standing up Postgres or Elasticsearch. See test/unit/metrics.test.ts.
 
 function hybridDocs(q: QueryEval, weight: number): string[] {
   const toScored = (h: ChunkHit[]): Scored[] => h.map((x) => ({ id: x.chunkId, score: x.score }));
@@ -191,52 +183,6 @@ function rankedDocs(q: QueryEval, strat: Strategy, weight: number): string[] {
   if (strat === "semantic") return dedupDocs(q.sm);
   if (strat === "hybrid+rerank" && q.hybridRerankDocs) return q.hybridRerankDocs;
   return hybridDocs(q, weight);
-}
-
-function ranksForQuery(docs: string[], relevant: string[]): number[] {
-  const r: number[] = [];
-  for (let i = 0; i < docs.length; i++) {
-    if (relevant.includes(docs[i])) r.push(i + 1);
-  }
-  return r;
-}
-
-function recallAt(rankings: number[][], evals: QueryEval[], k: number): number {
-  if (rankings.length === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < rankings.length; i++) {
-    const total = evals[i].relevant.length;
-    if (total === 0) continue;
-    sum += rankings[i].filter(r => r <= k).length / total;
-  }
-  return sum / rankings.length;
-}
-
-function mrr(rankings: number[][]): number {
-  if (rankings.length === 0) return 0;
-  return rankings.reduce<number>((s, r) => s + (r.length > 0 ? 1 / r[0] : 0), 0) / rankings.length;
-}
-
-function precisionAt(rankings: number[][], k: number): number {
-  if (rankings.length === 0) return 0;
-  return rankings.reduce<number>((sum, r) => sum + r.filter(x => x <= k).length / k, 0) / rankings.length;
-}
-
-function ndcgAt(rankings: number[][], evals: QueryEval[], k: number): number {
-  if (rankings.length === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < rankings.length; i++) {
-    const total = evals[i].relevant.length;
-    if (total === 0) continue;
-    let idcg = 0;
-    for (let j = 1; j <= Math.min(k, total); j++) idcg += 1 / Math.log2(j + 1);
-    let dcg = 0;
-    for (const rank of rankings[i]) {
-      if (rank <= k) dcg += 1 / Math.log2(rank + 1);
-    }
-    sum += dcg / idcg;
-  }
-  return sum / rankings.length;
 }
 
 function ranksFor(evals: QueryEval[], strat: Strategy, weight: number): number[][] {
