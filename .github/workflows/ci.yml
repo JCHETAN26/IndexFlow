@@ -74,10 +74,15 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # `python3 -m pip`, and the checker invoked as a plain step rather than through the pnpm
+      # script: pnpm resolved a different interpreter from the one pip installed into, so the
+      # module was missing at import despite a successful install.
       - name: Install pytrec_eval
-        run: pip install pytrec_eval==0.5
+        run: python3 -m pip install pytrec_eval==0.5
+      - name: Export rankings in TREC format
+        run: pnpm --filter @indexflow/web eval:trec-export
       - name: Cross-check metrics against the reference implementation
-        run: pnpm --filter @indexflow/web eval:crosscheck
+        run: python3 apps/web/eval/crosscheck.py apps/web/.evalrun/trec
       - name: Upload TREC export
         if: always()
         uses: actions/upload-artifact@v4
