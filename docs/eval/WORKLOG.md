@@ -222,3 +222,99 @@ suite (`vitest.config.ts` header comment). Placing the file at **`apps/web/test/
 satisfies the brief's actual requirement — "these tests go in CI" — with no config change, and runs
 on every push in the existing `unit tests` job rather than only in the services-bound `eval` job.
 
+### What was built
+
+- `apps/web/eval/metrics.ts` — `recallAt`, `mrr`, `precisionAt`, `ndcgAt`, `ranksForQuery`,
+  `dedupDocs` moved out of `harness.ts` **unchanged**, plus a new `ceilingFor` (used in Phase 2).
+  No semantic change in this phase; the extraction exists so the instrument can be tested without
+  Postgres or Elasticsearch.
+- `apps/web/test/unit/metrics.test.ts` — 20 tests, synthetic rankers, exact expectations.
+- `apps/web/eval/trec-export.ts` + `apps/web/eval/crosscheck.py` — TREC-format export and the
+  `pytrec_eval` comparison.
+- `.github/workflows/ci.yml` — new `metrics cross-check` job; `workflow_dispatch` added so eval
+  jobs can be run on a branch without opening a PR.
+
+### 1b result — synthetic rankers
+
+`pnpm --filter @indexflow/web test:unit` → **53 passed (5 files)**, of which 20 are the new metrics
+suite. Every pre-registered exact value was met at 12 decimal places on the first run; no
+expectation was adjusted to match output.
+
+Prediction 1 **confirmed**: oracle MRR = 0.9706 and oracle R@1 = 0.9118, both strictly below 1.0.
+Prediction 2 **confirmed**: oracle P@3 = 37/102 = 0.362745, identical to the Phase 0 ceiling.
+
+One test earns its place beyond the brief's list — `"would double-count without the dedup"` asserts
+that an un-deduplicated ranking yields `recall@3 = 2.0`. A recall above 1.0 is the visible symptom
+if `dedupDocs` is ever removed, and nothing else in the suite would catch it.
+
+Also found, already known to the author: `test/unit/hybrid.test.ts` contains
+`KNOWN WART: drops each leg's lowest hit, because min-max sends it to exactly 0`. The Phase 0 Q2
+finding was documented in a test, not overlooked.
+
+### 1a result — cross-check against pytrec_eval
+
+Two CI failures before a green run, both environmental, neither a metric defect:
+
+1. `pip install` and `python3` resolved different interpreters under pnpm. Fixed by installing with
+   `python3 -m pip` and invoking the checker as a plain workflow step.
+2. `pytrec_eval==0.5` builds a wheel on Python 3.12 but the extension does not import. Switched to
+   `pytrec-eval-terrier` (same module name, maintained fork). My handler had swallowed the real
+   exception, which cost the round trip; it now prints `repr(exc)`.
+
+Green run: **[CI 30949539937](https://github.com/JCHETAN26/IndexFlow/actions/runs/30949539937)**,
+all five jobs pass. Raw output, four rankers × six measures:
+
+| ranker | measure | harness | reference | ref × 33/34 | delta |
+|---|---|---|---|---|---|
+| oracle | recip_rank | 0.970588 | 1.000000 | 0.970588 | 0.00e+00 |
+| oracle | recall_1 | 0.911765 | 0.939394 | 0.911765 | −1.11e−16 |
+| oracle | recall_3 | 0.970588 | 1.000000 | 0.970588 | 0.00e+00 |
+| oracle | recall_5 | 0.970588 | 1.000000 | 0.970588 | 0.00e+00 |
+| oracle | P_3 | 0.362745 | 0.373737 | 0.362745 | +1.11e−16 |
+| oracle | ndcg_cut_5 | 0.970588 | 1.000000 | 0.970588 | 0.00e+00 |
+| reversed | recip_rank | 0.057526 | 0.059269 | 0.057526 | +1.39e−17 |
+| reversed | all cut-off metrics | 0.000000 | 0.000000 | 0.000000 | 0.00e+00 |
+| random | recip_rank | 0.196606 | 0.202564 | 0.196606 | 0.00e+00 |
+| random | recall_1 | 0.044118 | 0.045455 | 0.044118 | 0.00e+00 |
+| random | recall_3 | 0.161765 | 0.166667 | 0.161765 | +2.78e−17 |
+| random | recall_5 | 0.323529 | 0.333333 | 0.323529 | +5.55e−17 |
+| random | P_3 | 0.068627 | 0.070707 | 0.068627 | 0.00e+00 |
+| random | ndcg_cut_5 | 0.179691 | 0.185137 | 0.179691 | −2.78e−17 |
+| scattered | recip_rank | 0.323529 | 0.333333 | 0.323529 | +1.11e−16 |
+| scattered | recall_3 | 0.911765 | 0.939394 | 0.911765 | −1.11e−16 |
+| scattered | recall_5 | 0.911765 | 0.939394 | 0.911765 | −1.11e−16 |
+| scattered | P_3 | 0.323529 | 0.333333 | 0.323529 | +1.11e−16 |
+| scattered | ndcg_cut_5 | 0.462538 | 0.476554 | 0.462538 | 0.00e+00 |
+
+**Prediction 3 confirmed exactly.** Every measure agrees after multiplying the reference by
+33/34; residuals are 1e−16 to 1e−17, i.e. floating-point representation error, twelve orders of
+magnitude inside the 1e−4 tolerance.
+
+**Prediction 4 confirmed.** nDCG@5 agrees. The harness's IDCG convention — binary gain, IDCG over
+`min(k, total)` — is `ndcg_cut`'s convention. This was the one I expected to be wrong; it is not.
+
+**Conclusion: the metric implementations are correct.** Nothing downstream is blocked. The only
+divergence from the reference is the unanswerable query in the denominator, and the reference's
+oracle values make that unambiguous — `trec_eval` scores the oracle at exactly **1.000000** where
+the harness scores **0.970588**. That is not a metric bug; it is the Phase 2 finding, now measured
+rather than argued: **0.9706 is the attainable ceiling, and three strategies are sitting on it.**
+
+### Regression check on the extraction
+
+The services-bound `eval` job in the same CI run passed and reproduced the captured numbers
+exactly — keyword 0.73, semantic 0.94, hybrid 0.85, hybrid+rerank 0.90; R@5 97/97/97; sweep best
+0.55; the same four reranker regressions. Moving the metric functions changed no output.
+
+This is also an independent reproducibility result: `RESULTS.md` was captured 2026-07-28 on an 8 GB
+Mac, and the run reproduces bit-for-bit on an `ubuntu-latest` runner. Recorded because it was not
+previously known to be machine-independent.
+
+Empirical confirmation of the Phase 0 arithmetic, from this run rather than from the label file:
+
+| | semantic | hybrid | hybrid+rerank | ceiling |
+|---|---|---|---|---|
+| R@5 | 97% | 97% | 97% | **97.06%** |
+| P@3 | 36% | 35% | 35% | **36.27%** |
+
+**Gate: Phase 1 passed — nothing disagreed. Reported to the user.**
+
