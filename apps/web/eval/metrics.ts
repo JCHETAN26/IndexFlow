@@ -18,6 +18,20 @@ export interface Labeled {
 }
 
 /**
+ * How many queries a ranking metric is defined over.
+ *
+ * A query with no relevant document cannot be ranked well or badly — there is nothing to put at
+ * rank 1 — so it is excluded from the denominator of every ranking metric rather than scored as a
+ * miss. This matches `trec_eval`, which averages only over queries present in the qrels file.
+ *
+ * Retrieving nothing for an unanswerable query is *correct behaviour*, and the ranking metrics are
+ * the wrong instrument to credit it with. It is measured separately as a rejection signal — see
+ * the `rejection` block in the eval report.
+ */
+export const judgedCount = (evals: Labeled[]): number =>
+  evals.reduce((n, e) => n + (e.relevant.length > 0 ? 1 : 0), 0);
+
+/**
  * Collapse a chunk-ordered ranking to a document ranking, keeping first appearance.
  *
  * On the current 17-document corpus every document is a single chunk, so this is a no-op; it
@@ -44,51 +58,60 @@ export function ranksForQuery(docs: string[], relevant: string[]): number[] {
   return r;
 }
 
-/**
- * Mean recall@k.
- *
- * NOTE the denominator: queries with no relevant documents are skipped in the numerator but still
- * counted in `rankings.length`. That caps this metric below 1 whenever the set contains an
- * unanswerable query — see `ceilingFor`.
- */
+/** Mean recall@k over judged queries. */
 export function recallAt(rankings: number[][], evals: Labeled[], k: number): number {
-  if (rankings.length === 0) return 0;
+  const n = judgedCount(evals);
+  if (n === 0) return 0;
   let sum = 0;
   for (let i = 0; i < rankings.length; i++) {
     const total = evals[i].relevant.length;
     if (total === 0) continue;
     sum += rankings[i].filter((r) => r <= k).length / total;
   }
-  return sum / rankings.length;
-}
-
-/** Mean reciprocal rank of the first relevant document. No relevant document found scores 0. */
-export function mrr(rankings: number[][]): number {
-  if (rankings.length === 0) return 0;
-  return rankings.reduce<number>((s, r) => s + (r.length > 0 ? 1 / r[0] : 0), 0) / rankings.length;
+  return sum / n;
 }
 
 /**
- * Mean precision@k. Divides by k, not by min(k, total) — the standard convention, but it means a
- * query with one relevant document can score at most 1/k. On a corpus labelled one-doc-per-query
- * that puts the attainable maximum near 1/k, which is easy to misread as a poor score.
+ * Mean reciprocal rank of the first relevant document, over judged queries. A judged query whose
+ * relevant document was never retrieved scores 0; an unjudged query is not scored at all.
  */
-export function precisionAt(rankings: number[][], k: number): number {
-  if (rankings.length === 0) return 0;
-  return (
-    rankings.reduce<number>((sum, r) => sum + r.filter((x) => x <= k).length / k, 0) /
-    rankings.length
-  );
+export function mrr(rankings: number[][], evals: Labeled[]): number {
+  const n = judgedCount(evals);
+  if (n === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < rankings.length; i++) {
+    if (evals[i].relevant.length === 0) continue;
+    sum += rankings[i].length > 0 ? 1 / rankings[i][0] : 0;
+  }
+  return sum / n;
 }
 
 /**
- * Mean nDCG@k with binary gain.
+ * Mean precision@k over judged queries. Divides by k, not by min(k, total) — the standard
+ * convention, but it means a query with one relevant document can score at most 1/k. On a corpus
+ * labelled one-document-per-query that puts the attainable maximum near 1/k, which is easy to
+ * misread as a poor score. This is why `ceilingFor` exists and why the report prints it.
+ */
+export function precisionAt(rankings: number[][], evals: Labeled[], k: number): number {
+  const n = judgedCount(evals);
+  if (n === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < rankings.length; i++) {
+    if (evals[i].relevant.length === 0) continue;
+    sum += rankings[i].filter((x) => x <= k).length / k;
+  }
+  return sum / n;
+}
+
+/**
+ * Mean nDCG@k with binary gain, over judged queries.
  *
  * DCG sums 1/log2(rank+1) over relevant documents inside the cut; IDCG is the same sum over the
- * first min(k, total) positions. Same denominator caveat as `recallAt`.
+ * first min(k, total) positions — the `ndcg_cut` convention, verified against pytrec_eval.
  */
 export function ndcgAt(rankings: number[][], evals: Labeled[], k: number): number {
-  if (rankings.length === 0) return 0;
+  const n = judgedCount(evals);
+  if (n === 0) return 0;
   let sum = 0;
   for (let i = 0; i < rankings.length; i++) {
     const total = evals[i].relevant.length;
@@ -101,22 +124,21 @@ export function ndcgAt(rankings: number[][], evals: Labeled[], k: number): numbe
     }
     sum += dcg / idcg;
   }
-  return sum / rankings.length;
+  return sum / n;
 }
 
 /**
  * The best score a perfect ranker could achieve on this label set — the value an oracle that puts
  * every relevant document at the top would score.
  *
- * This is not a theoretical nicety. Two properties of the label set hold every metric below 1:
+ * Excluding unanswerable queries removes one cause of a sub-1.0 ceiling, but not the other: label
+ * density still binds. recall@k is capped at min(k, total)/total per query and precision@k at
+ * min(k, total)/k, so a set labelled one-relevant-document-per-query caps P@3 near 1/3 and holds
+ * R@1 below 1 for every multi-relevant query.
  *
- *  1. A query with no relevant documents contributes 0 to the numerator and 1 to the denominator,
- *     so every metric is capped at judged/total.
- *  2. recall@k is capped at min(k, total)/total per query, and precision@k at min(k, total)/k, so
- *     a set labelled one-relevant-document-per-query caps P@k near 1/k and R@1 below 1.
- *
- * Reporting a score without its ceiling is how a saturated benchmark passes for a good one: on
- * this corpus R@5 = 97% is not "97% of documents found", it is 100% of what is findable.
+ * Reporting a score without its ceiling is how a saturated benchmark passes for a good one, and
+ * how a structurally capped metric passes for a bad score. On this corpus P@3 = 36% is not a poor
+ * precision — it is 97% of everything attainable.
  */
 export function ceilingFor(evals: Labeled[], metric: "mrr" | "ndcg", k?: number): number;
 export function ceilingFor(evals: Labeled[], metric: "recall" | "precision", k: number): number;
@@ -125,7 +147,7 @@ export function ceilingFor(
   metric: "mrr" | "recall" | "precision" | "ndcg",
   k = 0,
 ): number {
-  const n = evals.length;
+  const n = judgedCount(evals);
   if (n === 0) return 0;
   let sum = 0;
   for (const e of evals) {
@@ -136,4 +158,41 @@ export function ceilingFor(
     else sum += Math.min(k, total) / k;
   }
   return sum / n;
+}
+
+/** A metric expressed as a fraction of what this label set makes attainable. */
+export const fractionOfCeiling = (value: number, ceiling: number): number =>
+  ceiling === 0 ? 0 : value / ceiling;
+
+/**
+ * Top raw retrieval score per query, split by whether the query is answerable.
+ *
+ * The rejection question — "did the strategy correctly return nothing?" — cannot be asked of the
+ * ranking metrics, and cannot be asked of the blended hybrid score at all: `blendHybrid` min-max
+ * normalises per query, so the top blended score is 1.0 for every query regardless of whether
+ * anything relevant was found. Only raw leg scores carry absolute information, and of those only
+ * cosine similarity is comparable across queries; BM25 is not, because its scale moves with the
+ * query's term IDFs.
+ *
+ * So this reports the separation rather than a rate: if the top score on an unanswerable query
+ * falls inside the range of top scores on answerable ones, no threshold can tell them apart.
+ */
+export interface RejectionSignal {
+  unanswerableTop: number[];
+  answerableTop: { min: number; median: number; max: number };
+  /** True iff every unanswerable query scores below every answerable one. */
+  separable: boolean;
+}
+
+export function rejectionSignal(
+  tops: { top: number; answerable: boolean }[],
+): RejectionSignal {
+  const un = tops.filter((t) => !t.answerable).map((t) => t.top);
+  const an = tops.filter((t) => t.answerable).map((t) => t.top).sort((a, b) => a - b);
+  const median = an.length === 0 ? 0 : an[Math.floor(an.length / 2)];
+  return {
+    unanswerableTop: un,
+    answerableTop: { min: an[0] ?? 0, median, max: an[an.length - 1] ?? 0 },
+    separable: un.length > 0 && an.length > 0 && Math.max(...un) < Math.min(...an),
+  };
 }

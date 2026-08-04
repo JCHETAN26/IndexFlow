@@ -5,14 +5,13 @@ Phase 1a of the evaluation hardening. `eval/metrics.ts` is a from-scratch implem
 decides whether CI's quality gate passes; this scores identical rankings with the reference
 implementation the IR literature uses and reports the delta.
 
-Pre-registered prediction (docs/eval/WORKLOG.md, written before this ran):
+Originally this expected `harness == (judged/total) * reference`, because trec_eval averages only
+over queries appearing in qrels while the harness divided by all 34. Phase 2 changed the harness to
+exclude unanswerable queries from every ranking metric, adopting trec_eval's convention, so the
+expected scale is now exactly 1: the two implementations should agree with no correction at all.
 
-    harness_value == (judged / total) * reference_value
-
-for recip_rank, recall@{1,3,5}, P_3 and ndcg_cut_5 -- because trec_eval averages only over
-queries that appear in qrels, and a query with no relevant documents cannot appear there, while
-the harness divides by all 34. Any residual beyond that factor is a real convention mismatch and
-the reference wins.
+The scale is read from harness.json rather than hardcoded, so this file does not need editing if
+the convention changes again -- but a scale of 1 is the stronger claim, and it is what is asserted.
 
 Exit code is non-zero if anything disagrees beyond tolerance, so this can gate CI.
 

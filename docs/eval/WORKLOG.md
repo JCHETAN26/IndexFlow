@@ -318,3 +318,75 @@ Empirical confirmation of the Phase 0 arithmetic, from this run rather than from
 
 **Gate: Phase 1 passed — nothing disagreed. Reported to the user.**
 
+---
+
+## 2026-08-04 — Phase 2: the ceiling problem
+
+User confirmed the recommended convention: exclude unanswerable queries from the ranking metrics,
+score rejection separately.
+
+### Decision, and its justification
+
+**Unanswerable queries are excluded from the denominator of MRR, recall@k, precision@k and
+nDCG@k.** A query with no relevant document cannot be ranked well or badly — there is nothing to
+place at rank 1 — so scoring it as a miss penalises a behaviour that is actually correct. This is
+also precisely `trec_eval`'s convention, which means the Phase 1 cross-check gets *stronger*: the
+expected harness/reference scale moves from 33/34 to exactly **1**, and `trec-export.ts` now
+asserts that.
+
+Rejection is measured separately, but **not as a rate**, for two reasons discovered while
+implementing it:
+
+1. **There is one unanswerable query in the held-out split and none in the tuning split.** A rate
+   over n=1 measures nothing, and any threshold calibrated to separate that single query would be
+   fitted to the test set — exactly the failure this project already retired once.
+2. **The hybrid strategy cannot be given a rejection score at all.** `blendHybrid` min-max
+   normalises per query, so the top blended score is 1.0 for *every* query regardless of whether
+   anything relevant was found. Only raw leg scores carry absolute information, and of those only
+   cosine is comparable across queries — BM25's scale moves with the query's term IDFs.
+
+So the report prints *separation*: the top raw score on the unanswerable query beside the min /
+median / max of top raw scores on answerable ones, per leg, with a `separable` verdict. If the
+unanswerable query's score falls inside the answerable range, no threshold could tell them apart.
+That is a descriptive finding, honestly bounded, rather than a fabricated rate.
+
+### Pre-registration (written BEFORE the re-run)
+
+Numerators are unchanged and the denominator drops 34 → 33, so **every held-out ranking metric
+should rise by exactly 34/33 = 1.0303**, subject to rounding at the printed precision.
+
+| metric | before | predicted after |
+|---|---|---|
+| semantic MRR | 0.94 | 0.97 |
+| hybrid MRR | 0.85 | 0.88 |
+| hybrid+rerank MRR | 0.90 | 0.93 |
+| keyword MRR | 0.73 | 0.75 |
+| semantic / hybrid / +rerank R@5 | 97% | **100%** |
+| semantic R@1 | 85% | 88% |
+| semantic P@3 | 36% | 37% |
+
+**The load-bearing prediction: R@5 becomes exactly 100% for three strategies, and the new ceiling
+row prints 100% beside it.** If R@5 lands below 100% then those strategies were *not* at the
+ceiling and the Phase 0 arithmetic was wrong about which queries they were missing.
+
+Secondary predictions:
+
+- `byKind` is computed on the whole set (tune + test), and the single unanswerable query is a
+  *paraphrase*. So paraphrase metrics should rise slightly and **exact metrics should not move at
+  all**. Any movement in an exact-query number means something other than this change moved.
+- No gate row should fail; every floor sits below a number that is going up.
+- The weight sweep runs on the tuning split, which contains no unanswerable query, so **the
+  selected weight should stay 0.55**. If it moves, the sweep is more fragile than believed.
+
+### Implementation
+
+- `metrics.ts` — all four metrics divide by `judgedCount(evals)`; `mrr` and `precisionAt` now take
+  the label rows (they previously could not tell which queries were judged). Added `ceilingFor`,
+  `fractionOfCeiling`, `rejectionSignal`.
+- `harness.ts` — `ceilings` and `rejection` blocks on the report; bootstrap resamples judged
+  queries only, so the interval surrounds the same quantity the point estimate reports;
+  `dataset.numTestJudged` records the real denominator.
+- `run.ts` — permanent `ceiling` row in the strategy table, a `% of attainable ceiling` table
+  beneath it, and a rejection block.
+- Unit expectations re-derived and re-registered above; 54 tests pass locally.
+

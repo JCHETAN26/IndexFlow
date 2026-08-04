@@ -112,11 +112,11 @@ function runFile(rows: Row[], rank: (row: Row) => string[], tag: string): string
 function harnessMetrics(rows: Row[], rank: (row: Row) => string[]) {
   const ranks = rows.map((r) => ranksForQuery(rank(r), r.relevant));
   return {
-    recip_rank: mrr(ranks),
+    recip_rank: mrr(ranks, rows),
     recall_1: recallAt(ranks, rows, 1),
     recall_3: recallAt(ranks, rows, 3),
     recall_5: recallAt(ranks, rows, 5),
-    P_3: precisionAt(ranks, 3),
+    P_3: precisionAt(ranks, rows, 3),
     ndcg_cut_5: ndcgAt(ranks, rows, 5),
   };
 }
@@ -138,9 +138,10 @@ writeFileSync(
       numQueries: testRows.length,
       numJudged: judged,
       numDocs: N,
-      // The correction the cross-check expects to have to apply, stated up front so the Python
-      // side cannot be accused of fitting a factor after seeing the residual.
-      predictedScale: judged / testRows.length,
+      // Since Phase 2 the harness excludes unanswerable queries from every ranking metric, which
+      // is exactly what trec_eval does, so no correction should be needed at all. Before that
+      // change this was judged/total; a value of 1 is the stronger claim and the one now asserted.
+      predictedScale: 1,
       metrics: harness,
     },
     null,

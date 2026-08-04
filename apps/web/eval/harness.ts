@@ -20,7 +20,18 @@ import { embed, toVectorLiteral } from "../lib/embed";
 import { blendHybrid, type Scored } from "../lib/hybrid";
 import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsChunk } from "../lib/es";
 import { rerank } from "../lib/rerank";
-import { dedupDocs, mrr, ndcgAt, precisionAt, ranksForQuery, recallAt } from "./metrics";
+import {
+  ceilingFor,
+  dedupDocs,
+  judgedCount,
+  mrr,
+  ndcgAt,
+  precisionAt,
+  ranksForQuery,
+  recallAt,
+  rejectionSignal,
+  type RejectionSignal,
+} from "./metrics";
 import corpus from "./corpus.json";
 import queries from "./queries.json";
 
@@ -91,7 +102,32 @@ export interface DatasetInfo {
   numQueries: number;
   numTune: number;
   numTest: number;
+  /** Held-out queries with at least one relevant document — the denominator of every metric. */
+  numTestJudged: number;
   numDocs: number;
+}
+
+/**
+ * The best each metric could possibly score on this label set. Printed beside every reported
+ * value so a saturated benchmark is visible in the run log rather than inferable from the labels.
+ */
+export interface Ceilings {
+  recall: { 1: number; 3: number; 5: number };
+  precision: { 3: number };
+  ndcg: { 5: number };
+  mrr: number;
+}
+
+/**
+ * Whether a strategy could tell an unanswerable query from an answerable one, if it were allowed
+ * to return nothing. Reported as separation, not as a rate — see `rejectionSignal`.
+ */
+export interface RejectionReport {
+  numAnswerable: number;
+  numUnanswerable: number;
+  legs: Record<"keyword" | "semantic", RejectionSignal>;
+  /** Why this is descriptive rather than a scored metric on the current label set. */
+  caveat: string;
 }
 
 export interface EvalReport {
@@ -109,6 +145,10 @@ export interface EvalReport {
   /** 95% bootstrap CIs for the headline hybrid metrics on the held-out split. */
   ci: { hybridMrr: Interval; hybridR1: Interval; hybridR5: Interval };
   strategies: Record<Strategy, StrategyMetrics>;
+  /** Attainable maxima for `strategies`, on the held-out split. */
+  ceilings: Ceilings;
+  /** Correctly returning nothing for an unanswerable query, measured apart from ranking. */
+  rejection: RejectionReport;
   byKind: Record<QueryKind, Record<Strategy, KindMetrics>>;
   sweep: { weight: number; mrr: number }[];
   regressions: Regression[];
@@ -307,9 +347,10 @@ export async function runEvaluation(): Promise<EvalReport> {
   const sweepExact = sweepRows.filter((e) => e.kind === "exact");
   const sweepPara = sweepRows.filter((e) => e.kind === "paraphrase");
   const balanced = (weight: number) => {
-    const e = sweepExact.length ? mrr(ranksFor(sweepExact, "hybrid", weight)) : 0;
-    const p = sweepPara.length ? mrr(ranksFor(sweepPara, "hybrid", weight)) : 0;
-    if (!sweepExact.length || !sweepPara.length) return mrr(ranksFor(sweepRows, "hybrid", weight));
+    const e = sweepExact.length ? mrr(ranksFor(sweepExact, "hybrid", weight), sweepExact) : 0;
+    const p = sweepPara.length ? mrr(ranksFor(sweepPara, "hybrid", weight), sweepPara) : 0;
+    if (!sweepExact.length || !sweepPara.length)
+      return mrr(ranksFor(sweepRows, "hybrid", weight), sweepRows);
     return (e + p) / 2;
   };
 
@@ -359,16 +400,16 @@ export async function runEvaluation(): Promise<EvalReport> {
   // Metrics calculation
   const metricsFor = (rows: QueryEval[], strat: Strategy): StrategyMetrics => {
     const ranks = ranksFor(rows, strat, weight);
-    return { 
-      recall: { 1: recallAt(ranks, rows, 1), 3: recallAt(ranks, rows, 3), 5: recallAt(ranks, rows, 5) }, 
-      precision: { 3: precisionAt(ranks, 3) },
+    return {
+      recall: { 1: recallAt(ranks, rows, 1), 3: recallAt(ranks, rows, 3), 5: recallAt(ranks, rows, 5) },
+      precision: { 3: precisionAt(ranks, rows, 3) },
       ndcg: { 5: ndcgAt(ranks, rows, 5) },
-      mrr: mrr(ranks) 
+      mrr: mrr(ranks, rows)
     };
   };
   const kindMetric = (rows: QueryEval[], strat: Strategy): KindMetrics => {
     const ranks = ranksFor(rows, strat, weight);
-    return { r1: recallAt(ranks, rows, 1), mrr: mrr(ranks) };
+    return { r1: recallAt(ranks, rows, 1), mrr: mrr(ranks, rows) };
   };
 
   const strategies = ["keyword", "semantic", "hybrid", "hybrid+rerank"] as const;
@@ -417,15 +458,42 @@ export async function runEvaluation(): Promise<EvalReport> {
     }
   }
 
-  // Per-query scores on the held-out split, for the bootstrap.
+  // Per-query scores on the held-out split, for the bootstrap. Unanswerable queries are dropped
+  // rather than contributing a zero, so the interval is around the same quantity the point
+  // estimate reports.
   const headlineRows = testRows.length > 0 ? testRows : evals;
+  const judgedIdx = headlineRows
+    .map((r, i) => (r.relevant.length > 0 ? i : -1))
+    .filter((i) => i >= 0);
   const headlineRanks = ranksFor(headlineRows, "hybrid", weight);
-  const reciprocalRanks = headlineRanks.map((r) => (r.length > 0 ? 1 / r[0] : 0));
+  const reciprocalRanks = judgedIdx.map((i) =>
+    headlineRanks[i].length > 0 ? 1 / headlineRanks[i][0] : 0,
+  );
   const hitAt = (k: number) =>
-    headlineRanks.map((r, i) => {
-      const total = headlineRows[i].relevant.length;
-      return total === 0 ? 0 : r.filter((x) => x <= k).length / total;
-    });
+    judgedIdx.map(
+      (i) => headlineRanks[i].filter((x) => x <= k).length / headlineRows[i].relevant.length,
+    );
+
+  // Rejection: can a leg's raw top score separate an unanswerable query from an answerable one?
+  // Hybrid is deliberately absent — blendHybrid min-max normalises per query, so its top score is
+  // 1.0 for every query and carries no absolute information at all.
+  const topsFor = (leg: "kw" | "sm") =>
+    headlineRows.map((r) => ({
+      top: (leg === "kw" ? r.kw : r.sm)[0]?.score ?? 0,
+      answerable: r.relevant.length > 0,
+    }));
+  const numUnanswerable = headlineRows.length - judgedIdx.length;
+  const rejection: RejectionReport = {
+    numAnswerable: judgedIdx.length,
+    numUnanswerable,
+    legs: { keyword: rejectionSignal(topsFor("kw")), semantic: rejectionSignal(topsFor("sm")) },
+    caveat:
+      numUnanswerable <= 1
+        ? `n=${numUnanswerable} unanswerable query in the held-out split and 0 in the tuning split. ` +
+          `No rejection RATE is estimable from this, and no threshold can be calibrated without ` +
+          `fitting it to the test set. Reported as score separation only.`
+        : `${numUnanswerable} unanswerable queries. Threshold must be calibrated on the tuning split.`,
+  };
 
   const report: EvalReport = {
     numQueries: evals.length,
@@ -438,6 +506,7 @@ export async function runEvaluation(): Promise<EvalReport> {
       numQueries: evals.length,
       numTune: tuneRows.length,
       numTest: testRows.length,
+      numTestJudged: judgedCount(headlineRows),
       numDocs: corpus.length,
     },
     ci: {
@@ -454,6 +523,17 @@ export async function runEvaluation(): Promise<EvalReport> {
       Strategy,
       StrategyMetrics
     >,
+    ceilings: {
+      recall: {
+        1: ceilingFor(headlineRows, "recall", 1),
+        3: ceilingFor(headlineRows, "recall", 3),
+        5: ceilingFor(headlineRows, "recall", 5),
+      },
+      precision: { 3: ceilingFor(headlineRows, "precision", 3) },
+      ndcg: { 5: ceilingFor(headlineRows, "ndcg", 5) },
+      mrr: ceilingFor(headlineRows, "mrr"),
+    },
+    rejection,
     byKind: {
       exact: Object.fromEntries(strategies.map((s) => [s, kindMetric(exact, s)])) as Record<Strategy, KindMetrics>,
       paraphrase: Object.fromEntries(strategies.map((s) => [s, kindMetric(para, s)])) as Record<Strategy, KindMetrics>,
