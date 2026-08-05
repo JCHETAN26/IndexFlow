@@ -41,6 +41,12 @@ const CANDIDATE_LIMIT = 30; // per-leg candidates, mirrors lib/retrieve CANDIDAT
 const SCALES = (process.env.BENCH_SCALES ?? "1000,10000,50000").split(",").map((s) => Number(s.trim()));
 const QUERIES = Number(process.env.BENCH_QUERIES ?? 200);
 const WARMUP = 20;
+/**
+ * Independent repeats per scale. One run reports a percentile without an error bar, which on a
+ * shared CI runner is indistinguishable from noise — the brief asks for run-to-run spread, and a
+ * p50 that moves 3ms between identical runs should not be read as a 3ms difference.
+ */
+const REPEATS = Number(process.env.BENCH_REPEATS ?? 3);
 const LOAD_BATCH = 500;
 
 // Small fixed vocabulary so BM25 has real terms to match/rank.
@@ -83,6 +89,9 @@ const round = (n: number) => Math.round(n * 10) / 10;
 
 interface Row {
   scale: number;
+  annRecall: number;
+  /** p50 of each independent repeat, so run-to-run spread is visible. */
+  repeatP50: { keyword: number[]; semantic: number[]; hybrid: number[] };
   loadPgPerSec: number;
   loadEsPerSec: number;
   hnswBuildMs: number;
@@ -173,28 +182,83 @@ async function timed<T>(fn: () => Promise<T>): Promise<number> {
   return performance.now() - t;
 }
 
+/**
+ * Measure the three strategies without letting any of them warm the caches for another.
+ *
+ * The previous implementation ran keyword, then semantic, then hybrid — in that fixed order, on
+ * the SAME query text and vector, every iteration. By the time hybrid ran, Elasticsearch had just
+ * served that exact query and Postgres had just executed that exact vector scan, so both of
+ * hybrid's legs were answered from caches the two standalone measurements had populated. That is
+ * why the published table showed hybrid p50 *below* keyword p50 at three of four scales, which is
+ * impossible for a strategy that awaits both legs. The number was an artifact of measurement
+ * order, not a property of the system.
+ *
+ * Two changes: every (trial, strategy) pair gets its **own** query, so no strategy inherits
+ * another's warm cache; and the order of the three strategies is **shuffled per trial**, so any
+ * residual position effect is spread evenly instead of always favouring whatever ran last.
+ */
 async function measure(esIndex: string) {
-  const qStrings = Array.from({ length: QUERIES + WARMUP }, queryText);
-  const qVecs = Array.from({ length: QUERIES + WARMUP }, randUnitVec);
-
   const kw: number[] = [];
   const sm: number[] = [];
   const hy: number[] = [];
-  for (let i = 0; i < QUERIES + WARMUP; i++) {
-    const warm = i < WARMUP;
-    const kMs = await timed(() => keywordQuery(qStrings[i], esIndex));
-    const sMs = await timed(() => semanticQuery(qVecs[i]));
-    const hMs = await timed(async () => {
-      const [k, s] = await Promise.all([keywordQuery(qStrings[i], esIndex), semanticQuery(qVecs[i])]);
+
+  const runOne = async (strategy: "keyword" | "semantic" | "hybrid"): Promise<number> => {
+    // A fresh query per measurement. Reusing one across strategies is what created the artifact.
+    const qs = queryText();
+    const qv = randUnitVec();
+    if (strategy === "keyword") return timed(() => keywordQuery(qs, esIndex));
+    if (strategy === "semantic") return timed(() => semanticQuery(qv));
+    return timed(async () => {
+      const [k, s] = await Promise.all([keywordQuery(qs, esIndex), semanticQuery(qv)]);
       blendHybrid(k, s, DEFAULT_HYBRID_WEIGHT).slice(0, K);
     });
-    if (!warm) {
-      kw.push(kMs);
-      sm.push(sMs);
-      hy.push(hMs);
+  };
+
+  for (let i = 0; i < QUERIES + WARMUP; i++) {
+    const warm = i < WARMUP;
+    const order: ("keyword" | "semantic" | "hybrid")[] = ["keyword", "semantic", "hybrid"];
+    for (let j = order.length - 1; j > 0; j--) {
+      const r = rand(j + 1);
+      [order[j], order[r]] = [order[r], order[j]];
+    }
+    for (const strategy of order) {
+      const ms = await runOne(strategy);
+      if (warm) continue;
+      if (strategy === "keyword") kw.push(ms);
+      else if (strategy === "semantic") sm.push(ms);
+      else hy.push(ms);
     }
   }
   return { keyword: kw.sort((a, b) => a - b), semantic: sm.sort((a, b) => a - b), hybrid: hy.sort((a, b) => a - b) };
+}
+
+/**
+ * ANN recall against exact KNN.
+ *
+ * HNSW trades recall for speed and the benchmark previously measured only the speed half, which
+ * makes a fast p50 unfalsifiable — an index that returns the wrong neighbours instantly would look
+ * excellent. For each sampled query the approximate top-k (index scan on, as production runs) is
+ * compared against the exact top-k (sequential scan forced), and the overlap reported.
+ */
+async function annRecall(samples = 50): Promise<number> {
+  let sum = 0;
+  for (let i = 0; i < samples; i++) {
+    const lit = vecLiteral(randUnitVec());
+    const approx = await db.$queryRawUnsafe<{ id: string }[]>(
+      `SELECT id::text AS id FROM bench_chunks ORDER BY embedding <=> '${lit}'::vector LIMIT ${K}`,
+    );
+    // Force the exact answer by disabling index scans for this statement only.
+    const exact = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe("SET LOCAL enable_indexscan = off");
+      await tx.$executeRawUnsafe("SET LOCAL enable_bitmapscan = off");
+      return tx.$queryRawUnsafe<{ id: string }[]>(
+        `SELECT id::text AS id FROM bench_chunks ORDER BY embedding <=> '${lit}'::vector LIMIT ${K}`,
+      );
+    });
+    const exactIds = new Set(exact.map((r) => r.id));
+    sum += approx.filter((r) => exactIds.has(r.id)).length / Math.max(1, exactIds.size);
+  }
+  return sum / samples;
 }
 
 function fmtStats(name: string, ms: number[]): string {
@@ -214,18 +278,47 @@ async function main() {
       console.log(
         `  loaded: pg ${Math.round(pgPerSec).toLocaleString()}/s · es ${Math.round(esPerSec).toLocaleString()}/s · hnsw build ${round(hnswMs)}ms`,
       );
-      const m = await measure(esIndex);
-      console.log("  " + fmtStats("keyword", m.keyword));
-      console.log("  " + fmtStats("semantic", m.semantic));
-      console.log("  " + fmtStats("hybrid", m.hybrid));
+      const recall = await annRecall();
+      console.log(`  ANN recall@${K} vs exact KNN: ${(recall * 100).toFixed(1)}%`);
+
+      // Independent repeats. Pooled samples give the headline percentiles; per-run p50s give the
+      // spread, which is what says whether a difference between scales is real.
+      const pooled = { keyword: [] as number[], semantic: [] as number[], hybrid: [] as number[] };
+      const repeatP50 = { keyword: [] as number[], semantic: [] as number[], hybrid: [] as number[] };
+      for (let run = 0; run < REPEATS; run++) {
+        const m = await measure(esIndex);
+        for (const mode of ["keyword", "semantic", "hybrid"] as const) {
+          pooled[mode].push(...m[mode]);
+          repeatP50[mode].push(pct(m[mode], 50));
+        }
+      }
+      for (const mode of ["keyword", "semantic", "hybrid"] as const) pooled[mode].sort((a, b) => a - b);
+
+      for (const mode of ["keyword", "semantic", "hybrid"] as const) {
+        const spread = repeatP50[mode].map((v) => round(v)).join(" / ");
+        console.log(`  ${fmtStats(mode, pooled[mode])}   per-run p50: ${spread}`);
+      }
+      // Sanity check the measurement itself: hybrid awaits both legs, so its p50 cannot be below
+      // the slower leg's p50. If it is, the numbers are an artifact and must not be published.
+      const slowestLeg = Math.max(pct(pooled.keyword, 50), pct(pooled.semantic, 50));
+      if (pct(pooled.hybrid, 50) < slowestLeg) {
+        console.log(
+          `  WARNING  hybrid p50 (${round(pct(pooled.hybrid, 50))}ms) is below the slower leg ` +
+            `(${round(slowestLeg)}ms). Hybrid awaits both legs, so this is impossible — treat these ` +
+            `latency numbers as an artifact, not a measurement.`,
+        );
+      }
+
       results.push({
         scale: n,
+        annRecall: recall,
+        repeatP50,
         loadPgPerSec: pgPerSec,
         loadEsPerSec: esPerSec,
         hnswBuildMs: hnswMs,
-        keyword: m.keyword,
-        semantic: m.semantic,
-        hybrid: m.hybrid,
+        keyword: pooled.keyword,
+        semantic: pooled.semantic,
+        hybrid: pooled.hybrid,
       });
     } finally {
       await deleteIndex(esIndex).catch(() => {});
@@ -244,15 +337,22 @@ async function main() {
   );
   lines.push(`Machine: local Docker (Postgres/pgvector, Elasticsearch 8, 512MB heap). Node ${process.version}.\n`);
   lines.push(`## Query latency (ms)\n`);
-  lines.push(`| Scale (chunks) | Mode | p50 | p95 | p99 | mean |`);
-  lines.push(`|---:|---|---:|---:|---:|---:|`);
+  lines.push(`| Scale (chunks) | Mode | p50 | p95 | p99 | mean | per-run p50 (${REPEATS} runs) |`);
+  lines.push(`|---:|---|---:|---:|---:|---:|---|`);
   for (const r of results) {
     for (const mode of ["keyword", "semantic", "hybrid"] as const) {
       const ms = r[mode];
       lines.push(
-        `| ${r.scale.toLocaleString()} | ${mode} | ${round(pct(ms, 50))} | ${round(pct(ms, 95))} | ${round(pct(ms, 99))} | ${round(mean(ms))} |`,
+        `| ${r.scale.toLocaleString()} | ${mode} | ${round(pct(ms, 50))} | ${round(pct(ms, 95))} | ${round(pct(ms, 99))} | ${round(mean(ms))} | ${r.repeatP50[mode].map((v) => round(v)).join(" / ")} |`,
       );
     }
+  }
+  lines.push(`\n## ANN recall vs exact KNN\n`);
+  lines.push(`> HNSW trades recall for speed. A fast p50 means nothing without this column.\n`);
+  lines.push(`| Scale (chunks) | ANN recall@${K} |`);
+  lines.push(`|---:|---:|`);
+  for (const r of results) {
+    lines.push(`| ${r.scale.toLocaleString()} | ${(r.annRecall * 100).toFixed(1)}% |`);
   }
   lines.push(`\n## Bulk index throughput (synthetic, not BullMQ)\n`);
   lines.push(`| Scale (chunks) | Postgres rows/s | Elasticsearch docs/s | HNSW build (ms) |`);
