@@ -66,10 +66,15 @@ def main() -> int:
     harness_blob = json.loads((out_dir / "harness.json").read_text())
     total = harness_blob["numQueries"]
     judged = harness_blob["numJudged"]
-    scale = judged / total
+    # Read the scale the exporter declared; do NOT recompute it from judged/total. The harness
+    # convention is what determines it, and since Phase 2 that convention matches trec_eval, so
+    # the declared value is 1. Recomputing here silently re-applied the pre-Phase-2 correction.
+    scale = harness_blob["predictedScale"]
 
     print(f"cross-check against pytrec_eval  ({pytrec_eval.__name__})")
-    print(f"queries: {total} total, {judged} judged -> predicted scale {judged}/{total} = {scale:.6f}")
+    print(f"queries: {total} total, {judged} judged -> declared scale {scale:.6f}")
+    if scale == 1:
+        print("harness excludes unanswerable queries, as trec_eval does: expecting exact agreement")
     print(f"tolerance: {TOLERANCE} (4 decimal places)\n")
 
     qrels = read_qrels(out_dir / "qrels.txt")
@@ -117,11 +122,14 @@ def main() -> int:
             print(f"  {f}")
         return 1
 
-    print("All measures agree with pytrec_eval to 4dp after the judged/total correction.")
-    print(
-        "Confirms: the metric code is correct, and the only divergence from the reference is the\n"
-        "unanswerable query sitting in the harness denominator — which is the Phase 2 finding."
-    )
+    if scale == 1:
+        print("All measures agree with pytrec_eval to 4dp, with no correction applied.")
+        print(
+            "Confirms: the metric implementations are correct AND their treatment of unanswerable\n"
+            "queries now matches the reference convention exactly."
+        )
+    else:
+        print(f"All measures agree with pytrec_eval to 4dp after scaling the reference by {scale:.6f}.")
     return 0
 
 
