@@ -1224,3 +1224,85 @@ blend and returns nothing measurable at the k that ships.
 the size of that headroom is an open question, not a claim. That is the single most useful next
 measurement for retrieval quality.
 
+
+
+---
+
+## 2026-08-05 — Phase 10
+
+Run: [CI 31044703693](https://github.com/JCHETAN26/IndexFlow/actions/runs/31044703693), all jobs green.
+
+### 10.1 Adversarial false-positive control
+
+The usability half was **two** legitimate queries, both answerable from a single public document
+reading "Rules: Be polite." A system that refuses everything scores a perfect zero disclosures and
+zero injection leaks, so the safety numbers are meaningless without this control.
+
+Expanded to a benign public corpus of 8 factual documents and **32 legitimate queries**. Refusal is
+detected from the generator's own `refused` flag (`lib/llm` `looksLikeRefusal`) rather than by
+keyword-matching the answer, so a correct answer phrased unexpectedly is not miscounted. Wrong
+answers are tracked separately from refusals — they are different failures and conflating them
+hides which is happening.
+
+**Two defects found while implementing it, both in code that produces a published number:**
+
+1. `Prompt injection leaks: 0 of 10 attempts.` was a **hardcoded string**. A successful injection
+   incremented `answerFails` and failed the gate, but the printed line still read "0 of 10". The
+   figure quoted in `RESULTS.md` §5 and the README was therefore a literal, not a measurement. Now
+   counted in its own variable.
+2. A false refusal incremented `answerFails`, the same counter as a security failure, so a
+   *usability* miss was reported as `Vulnerability leak(s) detected` and failed the build. The gate
+   is now security-only. Gating on usability would create pressure toward a more refusing system —
+   precisely the direction that inflates the safety score.
+
+**Not run.** `eval:adversarial` needs Postgres, Elasticsearch *and* Ollama. CI has the first two and
+no Ollama; this machine has no Docker. The code and fixtures are in place and the numbers are
+unmeasured. The existing `0/30` and `0/10` figures stand as the last captured run, with the caveat
+above now attached to the injection line.
+
+### 10.2 R@1 naming
+
+Added `hitRateAt` — the share of judged queries with **any** relevant document in the top k, which
+is what a reader assumes "R@1" means. On this label set an oracle scores hit-rate@1 of **1.00** and
+recall@1 of **31/33 = 0.94**, because recall divides by the number of relevant documents and four
+queries have two. Both are now reported side by side; recall stays because it is what published
+baselines use. Four unit tests pin the distinction, including one asserting that hit rate and
+recall diverge exactly where multi-relevant queries appear.
+
+### 10.3 Sweep precision
+
+The sweep printed 2dp against a `bestScore - 1e-9` tie-break, so a 0.0004 difference was invisible
+and the tie-break could silently decide the weight. Now 4dp, plus an explicit line reporting how
+many of the 21 weights sit within 1e-9 of the maximum and the span of that plateau.
+
+### 10.4 Oracle-rerank headroom — the open question, closed
+
+```
+  k     hybrid R@k    oracle rerank   headroom    label ceiling
+  6      14.4%         21.7%          +7.3pp       50.2%
+  10     16.4%         23.5%          +7.0pp       61.5%
+  30     22.8%         24.3%          +1.4pp       84.9%
+```
+
+`oracleRerankAt` computes the best recall@k achievable by perfectly reordering the pool already
+retrieved at depth 30 — the exact headroom available to ranking, with everything above it requiring
+better candidates.
+
+**At the k that ships, perfect reordering is worth +7.3 points, a 51% relative gain.** My earlier
+"a reranker can add at most 1.5 points" was measured at k=30 and understated the opportunity by a
+factor of five at k=6. Combined with the depth sweep, the picture is now unambiguous:
+
+| lever | measured value at k=6 |
+|---|---|
+| deeper retrieval (30 → 100) | **0.0pp** |
+| perfect reordering of the existing pool | **+7.3pp** |
+| beyond that (21.7% → 50.2%) | better candidates, and depth is not how to get them |
+
+Reranking is the live opportunity; depth is not. That is the reverse of what I concluded two
+entries ago, and it is now measured rather than inferred from cut-offs nobody consumes.
+
+Caveat on the claim: +7.3pp is what a *perfect* reranker would win. The cross-encoder actually
+implemented shows no statistically significant in-domain benefit and has never been run at scale.
+
+**Gate: Phase 10 complete — 10.2, 10.3 and 10.4 measured; 10.1 implemented but unrun for lack of
+an Ollama-capable environment.**

@@ -297,11 +297,38 @@ measurable.
 > hold at k=6 or k=10.
 >
 > The corrected picture: at **k=30** ranking is nearly optimal and depth is the only lever, but
-> that lever moves nothing a user sees. At **k=6** hybrid retrieves 14.4% against a *label* ceiling
-> of 50.2%, and 24.3% of relevant documents are sitting in the candidate pool — so there is real
-> headroom for better *ordering* within the existing pool. The oracle-rerank ceiling at k=6 (the
-> best any reordering of the depth-30 pool could achieve) is **not yet measured**, so the size of
-> that headroom is an open question rather than a claim.
+> that lever moves nothing a user sees. At **k=6** there is real headroom for better *ordering*
+> within the pool already retrieved — now measured, below.
+
+### How much could better ranking buy? Measured.
+
+Oracle rerank = the best recall@k achievable by perfectly reordering the candidate pool already
+retrieved at depth 30. The gap to it is exactly what a perfect reranker would win; anything beyond
+it needs better candidates, not better ordering.
+
+```
+  k     hybrid R@k    oracle rerank   headroom    label ceiling
+  6      14.4%         21.7%          +7.3pp       50.2%
+  10     16.4%         23.5%          +7.0pp       61.5%
+  30     22.8%         24.3%          +1.4pp       84.9%
+```
+
+**At the k that ships, perfect reordering is worth +7.3 points — a 51% relative gain — against
++1.4 at k=30.** The earlier "a reranker can add at most 1.5 points" bound was measured at a cut-off
+nobody consumes and understated the opportunity by a factor of five.
+
+This is the clearest statement of where retrieval quality currently stands:
+
+| lever | measured value at k=6 |
+|---|---|
+| deeper retrieval (`CANDIDATE_LIMIT` 30 → 100) | **0.0pp** (R@6 goes 14.4% → 14.1%) |
+| perfect reordering of the existing pool | **+7.3pp** |
+| everything above that (21.7% → 50.2%) | needs better candidates — and depth is not how to get them |
+
+Reranking is therefore the live opportunity and depth is not, which is the opposite of what this
+file said one revision ago. Note the ceiling on the claim: +7.3pp is what a *perfect* reranker
+would win, and the cross-encoder currently implemented is not perfect — its in-domain benefit is
+not statistically significant (§1), and it has never been measured at scale.
 
 ### Graded relevance is worth almost nothing here
 

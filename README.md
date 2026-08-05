@@ -140,11 +140,11 @@ It scores MRR 0.93 against plain hybrid's 0.89, but the paired interval is **+0.
 which includes zero at n=33. The point estimate is positive in every configuration tested, so it
 may well help — 33 queries cannot show it.
 
-**Retrieval depth is not the lever either.** Sweeping `CANDIDATE_LIMIT` on NFCorpus from 30 to 100
-raises the reachable pool by a third but moves R@6 from 14.4% to 14.1% and nDCG@10 by 0.7 points:
-the extra candidates are never ranked high enough to be consumed. It stays at 30. At k=6 hybrid
-retrieves 14.4% against a label ceiling of 50.2%, so the headroom is in *ordering* the pool it
-already has — how much is an open question, not a claim.
+**Retrieval depth is not the lever; ordering is.** Sweeping `CANDIDATE_LIMIT` on NFCorpus from 30
+to 100 raises the reachable pool by a third and moves R@6 from 14.4% to **14.1%** — the extra
+candidates are never ranked high enough to be consumed, so it stays at 30. But perfectly reordering
+the pool *already retrieved* would take R@6 from 14.4% to **21.7%**, a +7.3 point gain, against
+just +1.4 at k=30. Reranking is the live opportunity at the k that ships; retrieving more is not.
 
 **The citation judge is lenient, so treat citations 100% as an upper bound.** A blind 40-row human
 audit put `bespoke-minicheck` at 100% agreement on faithfulness (κ = 1.00), but `qwen2.5` passed
