@@ -116,10 +116,25 @@ async function main() {
   }
   console.log(`* ${chunks.length} chunks (${f2(chunks.length / ds.docs.length)} per document)`);
 
+  // Embed in visible slices. `embed` batches internally; this exists so a 10-minute step reports
+  // progress instead of looking like a hang, and so a kill can be located precisely.
+  const embedProgress = async (texts: string[], label: string): Promise<number[][]> => {
+    const SLICE = 1000;
+    const out: number[][] = [];
+    for (let i = 0; i < texts.length; i += SLICE) {
+      out.push(...(await embed(texts.slice(i, i + SLICE))));
+      console.log(
+        `[${Math.round((Date.now() - t0) / 1000)}s]   ${label}: ${Math.min(i + SLICE, texts.length)}/${texts.length}` +
+          `  rss=${Math.round(process.memoryUsage().rss / 1e6)}MB`,
+      );
+    }
+    return out;
+  };
+
   console.log(`\n[${Math.round((Date.now() - t0) / 1000)}s] embedding ${chunks.length} chunks...`);
-  const chunkVecs = await embed(chunks.map((c) => c.content));
+  const chunkVecs = await embedProgress(chunks.map((c) => c.content), "chunks");
   console.log(`[${Math.round((Date.now() - t0) / 1000)}s] embedding ${ds.queries.length} queries...`);
-  const queryVecs = await embed(ds.queries.map((q) => q.text));
+  const queryVecs = await embedProgress(ds.queries.map((q) => q.text), "queries");
 
   // Stable UUIDs per BEIR document id — the DB columns are uuid-typed.
   const uuidByDoc = new Map<string, string>(ds.docs.map((d) => [d.id, randomUUID() as string]));
