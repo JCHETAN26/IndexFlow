@@ -1306,3 +1306,75 @@ implemented shows no statistically significant in-domain benefit and has never b
 
 **Gate: Phase 10 complete — 10.2, 10.3 and 10.4 measured; 10.1 implemented but unrun for lack of
 an Ollama-capable environment.**
+
+
+---
+
+## 2026-08-05 — Phase 9b: latency at scale, correctly measured
+
+Run: [CI 31046256117](https://github.com/JCHETAN026/IndexFlow/actions/runs/31046256117) — 1k/10k/50k
+synthetic chunks, 150 queries per scale after 20 warmup, 3 independent repeats.
+
+### The impossible number, explained and fixed
+
+The brief flagged that hybrid p50 sat *below* keyword p50 at three of four scales, which cannot
+happen for a strategy that awaits both legs. **Cause found in `measure()`:** it ran keyword, then
+semantic, then hybrid — fixed order, on the *same* query string and vector, every iteration. By the
+time hybrid ran, Elasticsearch had just served that exact query and Postgres had just executed that
+exact vector scan, so both of hybrid's legs were answered from caches the two standalone
+measurements had populated. Hybrid was being timed against a warm cache its own competitors paid to
+fill.
+
+Fixed by giving every (trial, strategy) pair its **own** query — so no strategy inherits another's
+warm cache — and shuffling strategy order per trial. A guard now prints a loud warning if hybrid
+p50 lands below the slower leg, because that is proof the numbers are not measuring what they claim.
+
+### Result
+
+```
+scale     strategy   p50    p95    p99   mean   per-run p50 (3 runs)   ANN recall@10
+1,000     keyword    5.7   12.3   16.8    6.8   9.0 / 5.3 / 5.2        100.0%
+          semantic   1.5    2.5    4.0    1.6   1.8 / 1.3 / 1.4
+          hybrid     5.9   13.1   23.1    7.1   9.1 / 5.4 / 5.3
+10,000    keyword    5.8    7.6   10.0    6.0   5.7 / 5.9 / 5.7        100.0%
+          semantic   1.5    1.9    2.3    1.5   1.4 / 1.5 / 1.5
+          hybrid     5.9    7.9   11.0    6.0   5.9 / 6.0 / 5.7
+50,000    keyword    6.9    9.4   10.9    6.9   7.4 / 6.7 / 6.7        100.0%
+          semantic   1.3    1.7    3.0    1.3   1.4 / 1.2 / 1.2
+          hybrid     6.9   10.1   12.7    7.0   7.2 / 6.7 / 6.6
+
+HNSW build: 37.7ms @1k · 586.7ms @10k · 4,615.3ms @50k
+```
+
+**No warning fired at any scale.** Hybrid p50 now sits at or just above the slower leg, which is the
+only physically possible arrangement. The relationship is exactly `hybrid ≈ max(keyword, semantic) +
+blend`, and keyword dominates.
+
+### What the corrected numbers say
+
+1. **The Elasticsearch hop is the entire hybrid latency budget.** Keyword 5.7–6.9 ms against
+   semantic's 1.3–1.5 ms — in-process pgvector is roughly 4× faster than the ES round trip. The
+   earlier diagnosis was right; it now rests on a sound measurement.
+2. **Semantic latency is flat, and slightly *decreases* with scale** (1.5 → 1.5 → 1.3 ms across a
+   50× corpus growth). HNSW is behaving sublinearly as claimed.
+3. **ANN recall@10 is 100.0% at every scale**, so the speed is not being bought with recall. This
+   closes the "measures only the speed half" gap — but see the caveat below, which matters.
+4. **Run-to-run spread vindicates the repeats requirement.** At 1k, keyword per-run p50 was
+   **9.0 / 5.3 / 5.2 ms** — the first run 70% higher than the other two. A single run would have
+   published 9 ms as the 1k latency and invited a story about small-index overhead. It is warmup.
+5. **HNSW build is the real cost of scale**: 37.7 ms → 586.7 ms → 4.6 s, growing faster than
+   linearly (15× for a 10× corpus, 7.9× for a further 5×). Re-indexing, not querying, is what a
+   larger corpus makes expensive.
+
+### The caveat that limits finding 3
+
+**ANN recall of 100% on this corpus does not imply 100% on real embeddings.** The vectors here are
+uniform random unit vectors, which in 384 dimensions are very nearly orthogonal to one another, so
+true nearest neighbours are widely separated and trivially easy for HNSW to find. Real embeddings
+are strongly clustered, which is the regime where HNSW actually loses recall. This measurement
+establishes that the index is correctly built and queried; it does **not** establish that ANN recall
+is safe in production. Measuring recall on real embeddings requires the scale-eval path
+(`eval:scale`), which currently disables index scans to force exact KNN — running it both ways at a
+fixed corpus size is the honest version of this measurement and is **not yet done**.
+
+**Gate: 9b complete. 9a and 9c outstanding.**
