@@ -1171,3 +1171,56 @@ would be read backwards without the ceiling row, in opposite directions.
 
 **Gate: Phase 8 complete — both BEIR subsets run. Reported to the user.**
 
+---
+
+## 2026-08-05 — Documentation rewrite, and a correction to my own conclusion
+
+### Documentation
+
+`RESULTS.md` and `README.md` rewritten against six phases of measurement. Three claims retired,
+each with the superseded number struck through and its reason retained per the brief's deliverable:
+
+1. ~~"small gaps are noise, do not rank configurations by them"~~ — the paired interval on
+   semantic−hybrid is +0.08 [0.01, 0.16] and excludes zero.
+2. ~~"hybrid is the best configuration for exact-match queries"~~ — a three-way tie on held-out data.
+3. ~~"hybrid does not beat both single strategies"~~ as a general claim — true of 17 documents,
+   false on both public corpora.
+
+Added: §1b for the BEIR runs and the external anchor; ceilings beside every metric; the saturation
+statement; reranking's benefit marked as not statistically supported; six new entries under "what
+these numbers do not say" covering unaudited labels, unmeasured generation at scale, the n=1
+rejection signal, and the unmeasured cost of ACL filtering on ranking quality.
+
+### CANDIDATE_LIMIT sweep — and I was wrong
+
+Run: [CI 31012455747](https://github.com/JCHETAN26/IndexFlow/actions/runs/31012455747), NFCorpus.
+
+```
+  depth   MRR     R@6      R@10     nDCG@10   pool ceiling
+  10      0.53     13.5%    15.7%    31.7%     17.7%
+  20      0.53     14.1%    16.4%    32.9%     22.0%
+  30      0.53     14.4%    16.4%    33.2%     24.3%   <- production
+  50      0.53     14.1%    16.9%    33.7%     27.7%
+  100     0.54     14.1%    16.8%    33.9%     32.6%
+```
+
+**Correction to the previous entry.** After the first NFCorpus run I concluded: "the lever for
+recall on a densely-labelled corpus is `CANDIDATE_LIMIT`, not a better ranker." **That is wrong at
+consumable k.** Going 30 → 100 raises the pool ceiling by a third and moves R@6 from 14.4% to
+**14.1%** — slightly down — with nDCG@10 up 0.7 points. The extra candidates are reachable and
+never ranked high enough to be consumed.
+
+The error: I inferred a lever from R@30 and R@100, cutoffs nobody consumes. The RAG path passes
+**6** contexts. I had added R@6 in the very same commit for exactly this reason and then reasoned
+from the deep numbers anyway.
+
+**Decision: `CANDIDATE_LIMIT` stays at 30.** A deeper pool costs latency in both legs and in the
+blend and returns nothing measurable at the k that ships.
+
+**What this leaves open.** The "a reranker can add at most 1.5 points" bound is real at k=30 and
+**does not transfer to k=6**. At k=6 hybrid retrieves 14.4% against a label ceiling of 50.2%, with
+24.3% of relevant documents sitting in the candidate pool — so there is headroom for better
+*ordering* of the pool already retrieved. The oracle-rerank ceiling at k=6 is **not measured**, so
+the size of that headroom is an open question, not a claim. That is the single most useful next
+measurement for retrieval quality.
+

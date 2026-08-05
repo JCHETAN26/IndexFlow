@@ -80,10 +80,13 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 
 ## Results
 
-> **Every number below comes from [`apps/web/eval/RESULTS.md`](apps/web/eval/RESULTS.md)** — the
-> captured output of a single dated run (2026-07-26), with the exact command for each. That file
-> is the only source of truth for measurements in this repo. **Do not edit numbers here by hand;
-> re-run the evals and update that file.**
+> **Every number below comes from [`apps/web/eval/RESULTS.md`](apps/web/eval/RESULTS.md)** — captured
+> output with the exact command and CI run id for each. Retrieval and the scale runs are dated
+> 2026-08-05; the security, generation and latency evals 2026-07-26. That file is the only source
+> of truth for measurements in this repo, and it keeps superseded numbers struck through with their
+> reason rather than deleting them. **Do not edit numbers here by hand; re-run the evals and update
+> that file.** Method and pre-registered predictions are in
+> [`docs/eval/WORKLOG.md`](docs/eval/WORKLOG.md).
 
 | What | Command | Result |
 |---|---|---|
