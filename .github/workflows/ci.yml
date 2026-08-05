@@ -220,6 +220,11 @@ jobs:
           done
           echo "Elasticsearch did not become ready in time." >&2; exit 1
 
+      # Phase 3: reports the depth matrix on the TUNING split only, so it cannot leak into the
+      # held-out numbers the gate below scores. Informational — it has no gate of its own.
+      - name: Retrieval depth matrix (tuning split)
+        run: pnpm --filter @indexflow/web eval:depth
+
       - name: Run retrieval evaluation (quality gate)
         run: pnpm --filter @indexflow/web eval
 

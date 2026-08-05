@@ -482,3 +482,71 @@ their run link in the meantime.
 
 **Gate: Phase 2 complete, all predictions confirmed. Reported to the user.**
 
+---
+
+## 2026-08-05 — Phase 3: retrieval depth asymmetry
+
+### Hypothesis, restated against the code
+
+Confirmed by inspection in Phase 0: the harness retrieves keyword at `chunks.length` and semantic
+at `LIMIT 10`, while production retrieves both at `CANDIDATE_LIMIT = 30`.
+
+**What the brief could not know, and what changes the shape of this phase:** the corpus is 17
+documents of 37–54 words each against `TARGET_WORDS = 180`, so there are exactly **17 chunks**.
+Therefore:
+
+- `chunks.length` = 17. The keyword leg's depth is 17, not "thousands".
+- Depth cells **50/50, 100/100 and all/all are all identical to 17/17** on this corpus. The
+  requested 4-cell matrix collapses to **three distinct configurations**: 10/10, 17/17, and the
+  current 17/10.
+- **Production's 30/30 is also 17/17 here.** So the production configuration is not merely
+  different from the harness — it is exactly the equal-depth cell the brief hypothesises about.
+  Every published retrieval number measures 17/10, a configuration that has never shipped.
+
+I will still run the full requested matrix and report the collapse explicitly rather than silently
+dropping cells.
+
+### Pre-registration (written BEFORE any depth code exists)
+
+**Mechanism I expect to dominate.** `normalize()` in `lib/hybrid.ts` is min-max per leg, so a
+deeper list has a lower minimum, which *compresses the top of that list toward 1.0*. Concretely,
+for scores max=10, x₂=9: at min=5 the second item normalises to 0.80; at min=0 it normalises to
+0.90. Depth therefore does not just add candidates, it flattens the leg's discrimination near the
+top. A leg retrieved deep is a leg that votes less decisively among its own best hits.
+
+**Prediction 1 — the headline.** Equal depth will **not** materially rescue hybrid. Held-out hybrid
+MRR is 0.88 against semantic's 0.97; I predict equal depth moves hybrid by **less than 0.05** and
+that it **remains below semantic**. The published conclusion that blending hurts on this corpus
+survives Phase 3. Stated plainly so it cannot be reinterpreted afterwards: if hybrid at 17/17
+reaches 0.97 or above, **I was wrong and the conclusion was confounded**.
+
+**Prediction 2 — paraphrase specifically.** The brief expects the paraphrase deficit to be the
+thing depth repairs. I predict it **barely moves (<0.03)**, and my reasoning is the post-Phase-2
+number: semantic alone scores paraphrase MRR **0.95**, meaning it already places relevant documents
+at or near rank 1 on paraphrases. Very few relevant documents can be sitting at semantic ranks
+11–17 where the `LIMIT 10` truncation actually bites. The truncation is real but it is mostly
+truncating documents that were never going to matter.
+
+**Prediction 3 — direction of 10/10 versus 17/10.** Truncating the *keyword* leg to 10 should
+**slightly improve** hybrid. At depth 17 the keyword leg injects every matching chunk into the
+union, each with a nonzero normalised score, so BM25's tail gets a vote on queries where it has no
+signal. Cutting that tail should remove noise more than it removes information.
+
+**Prediction 4 — the weight will move.** The optimal blend weight is currently 0.55 on a 17/10
+configuration. Since equal depth changes the relative spread of the two legs, I expect the selected
+weight to **shift toward semantic (i.e. below 0.55)** at 17/17. Low confidence; the sweep plateau
+is wide and flat (0.30–0.80 all score 0.98), so the tie-break may simply re-select the middle.
+
+**Prediction 5 — rejection separation is unaffected.** The semantic abstention signal found in
+Phase 2 lives in *raw* cosine, before normalisation, so no depth change should alter it.
+
+### Method
+
+Retrieving at depth k returns exactly the first k of a full-depth ranked list, for both legs — ES
+returns BM25's top-k by score and the SQL leg is `ORDER BY ... LIMIT k`. So one retrieval pass at
+full depth supports every cell by truncation, with no loss of fidelity. This avoids re-seeding and
+re-embedding per cell, and avoids the reranker entirely, which the depth question does not involve.
+
+Matrix runs on the **tuning split only**. The depth configuration is chosen there, then held-out
+numbers are produced **once**.
+

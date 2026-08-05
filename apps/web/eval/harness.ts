@@ -20,6 +20,7 @@ import { embed, toVectorLiteral } from "../lib/embed";
 import { blendHybrid, type Scored } from "../lib/hybrid";
 import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsChunk } from "../lib/es";
 import { rerank } from "../lib/rerank";
+import { CANDIDATE_LIMIT } from "../lib/retrieve";
 import {
   ceilingFor,
   dedupDocs,
@@ -134,6 +135,12 @@ export interface EvalReport {
   numQueries: number;
   numDocs: number;
   hybridWeight: number;
+  /**
+   * Candidates actually retrieved per leg, after clamping to corpus size. Recorded because the
+   * run output previously asserted "10 chunks per strategy" while the keyword leg retrieved every
+   * chunk in the corpus — a false provenance line captured verbatim into RESULTS.md.
+   */
+  depths: RetrievalDepths;
   /** Provenance of the numbers below. */
   dataset: DatasetInfo;
   /**
@@ -229,8 +236,47 @@ function ranksFor(evals: QueryEval[], strat: Strategy, weight: number): number[]
   return evals.map((q) => ranksForQuery(rankedDocs(q, strat, weight), q.relevant));
 }
 
-// ── main ──────────────────────────────────────────────────────────────────
-export async function runEvaluation(): Promise<EvalReport> {
+// ── candidate collection ──────────────────────────────────────────────────
+/**
+ * How many candidates each leg retrieves.
+ *
+ * These used to be hardcoded and *asymmetric* — keyword at `chunks.length`, semantic at 10 —
+ * which is neither what production runs nor a fair comparison between the legs, since
+ * `blendHybrid` min-max normalises each list independently and a deeper list has its top
+ * compressed toward 1.0. Production retrieves both legs at `CANDIDATE_LIMIT`.
+ */
+export interface RetrievalDepths {
+  keyword: number;
+  semantic: number;
+}
+
+/** Mirror production. Anything else measures a configuration that does not ship. */
+export const PRODUCTION_DEPTHS: RetrievalDepths = {
+  keyword: CANDIDATE_LIMIT,
+  semantic: CANDIDATE_LIMIT,
+};
+
+/** The asymmetric depths every published number before 2026-08-05 was measured at. */
+export const LEGACY_DEPTHS: RetrievalDepths = { keyword: Number.MAX_SAFE_INTEGER, semantic: 10 };
+
+export interface Candidates {
+  evals: QueryEval[];
+  chunkById: Map<string, { content: string }>;
+  idByFile: Map<string, string>;
+  numChunks: number;
+}
+
+/**
+ * Seed both stores and retrieve candidates for every query, at the requested depths.
+ *
+ * Split out of `runEvaluation` so the depth-matrix experiment can reuse one seeding pass:
+ * retrieving at depth k returns exactly the first k of a full-depth ranked list for both legs
+ * (ES returns BM25's top-k by score; the SQL leg is `ORDER BY ... LIMIT k`), so a single
+ * retrieval at maximum depth can be truncated to simulate any shallower configuration exactly.
+ */
+export async function collectCandidates(
+  depths: RetrievalDepths = PRODUCTION_DEPTHS,
+): Promise<Candidates> {
   // Pre-generate ids in app code so the same id keys the Postgres row and the ES document.
   const idByFile = new Map<string, string>();
   for (const doc of corpus) idByFile.set(doc.fileName, randomUUID());
@@ -245,6 +291,9 @@ export async function runEvaluation(): Promise<EvalReport> {
 
   const chunkVecs = await embed(chunks.map((c) => c.content));
   const queryVecs = await embed(queries.map((q) => q.q));
+
+  const kwDepth = Math.min(depths.keyword, chunks.length);
+  const smDepth = Math.min(depths.semantic, chunks.length);
 
   const evals: QueryEval[] = [];
   const titleByFile = new Map(corpus.map((d) => [d.fileName, d.title]));
@@ -265,7 +314,7 @@ export async function runEvaluation(): Promise<EvalReport> {
     // Keyword strategy: real BM25 against the ephemeral ES index (no transaction needed).
     const kwByQuery: ChunkHit[][] = [];
     for (const query of queries) {
-      const hits = await keywordSearch(query.q, null, chunks.length, esIndex);
+      const hits = await keywordSearch(query.q, null, kwDepth, esIndex);
       kwByQuery.push(hits.map((h) => ({ chunkId: h.chunkId, docId: h.documentId, score: h.score, snippet: h.snippet })));
     }
 
@@ -304,7 +353,7 @@ export async function runEvaluation(): Promise<EvalReport> {
               FROM document_chunks dc
               WHERE dc."documentId"::text = ANY(${corpusIds}) AND dc.embedding IS NOT NULL
               ORDER BY dc.embedding <=> ${vec}::vector
-              LIMIT 10
+              LIMIT ${smDepth}
             `;
             // Compare against document ids, not filenames (kw/sm rows carry ids).
             const relevantIds = query.relevant.map((f) => idByFile.get(f)!);
@@ -330,6 +379,19 @@ export async function runEvaluation(): Promise<EvalReport> {
   } finally {
     await deleteIndex(esIndex).catch(() => {});
   }
+
+  return { evals, chunkById, idByFile, numChunks: chunks.length };
+}
+
+// ── main ──────────────────────────────────────────────────────────────────
+export async function runEvaluation(
+  depths: RetrievalDepths = PRODUCTION_DEPTHS,
+): Promise<EvalReport> {
+  const { evals, chunkById, idByFile, numChunks } = await collectCandidates(depths);
+  const effectiveDepths: RetrievalDepths = {
+    keyword: Math.min(depths.keyword, numChunks),
+    semantic: Math.min(depths.semantic, numChunks),
+  };
 
   // Weight sweep on the TUNING split only. Sweeping on everything and then reporting on
   // everything is how a hyperparameter quietly launders itself into the headline metric: the
@@ -499,6 +561,7 @@ export async function runEvaluation(): Promise<EvalReport> {
     numQueries: evals.length,
     numDocs: corpus.length,
     hybridWeight: weight,
+    depths: effectiveDepths,
     dataset: {
       version: DATASET_VERSION,
       queriesSha: sha8(queries),

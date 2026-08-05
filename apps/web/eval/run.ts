@@ -35,7 +35,12 @@ function print(r: EvalReport) {
   console.log(`* Chunking: semantic chunker`);
   console.log(`* Embedding: ${EMBED_MODEL} (${EMBED_DIM}-dim)`);
   console.log(`* Reranker: ${RERANK_MODEL}`);
-  console.log(`* Initial retrieval: 10 chunks per strategy`);
+  // Read from the report, never a literal. This line used to claim "10 chunks per strategy"
+  // while the keyword leg retrieved every chunk in the corpus.
+  console.log(
+    `* Initial retrieval: keyword ${r.depths.keyword} / semantic ${r.depths.semantic} chunks ` +
+      `(production CANDIDATE_LIMIT, clamped to corpus size)`,
+  );
   console.log(`* Reranker input: Top 10 blended chunks`);
   
   console.log("─".repeat(80));
