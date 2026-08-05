@@ -1004,3 +1004,63 @@ difference is not mistaken for drift.
 
 **Gate: Phase 8 SciFact leg complete. Reported to the user.**
 
+---
+
+## 2026-08-05 — Phase 8b: NFCorpus, plus the recall diagnostics
+
+User asked whether the metrics are weak. On the scores: no — hybrid's nDCG@10 of 0.707 sits above
+published BM25 (0.665) on a scale our own BM25 reproduces to within 0.02. On the *suite*: yes, and
+two gaps are cheap enough to close in this run.
+
+- **Recall@100 is absent and `CANDIDATE_LIMIT = 30` may be capping recall.** R@10 = 83% on SciFact
+  could be a ranking result or a candidate-pool result; nothing currently distinguishes them.
+- **Nothing is measured at the k that ships.** Production retrieves 30 and passes **6** contexts to
+  the generator. R@6 has never been reported.
+
+Both are added here. Method follows Phase 3: retrieve once at depth 100, and truncate to 30 for the
+headline numbers, since truncating a ranked list to k is exactly what retrieving k returns. A new
+**pool ceiling** row reports the fraction of relevant documents present anywhere in the union of
+the two legs' candidates — separating "ranked badly" from "never retrieved at all".
+
+### NFCorpus, measured from the download
+
+3,633 documents (median 237 words). Splits: dev 324 queries / 11,385 judgments / **graded (1, 2)**;
+test 323 queries / 12,334 judgments / **graded**; train 2,590 queries but **binary only**.
+
+Using **dev as the tuning split**, not train: dev is graded exactly like test, so the weight is
+selected on data of the same character it is scored on — the split-composition mismatch that Phase
+3 found in the in-domain set. Archive pinned at
+`efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b`.
+
+### Pre-registration
+
+**Prediction 1 — MRR becomes useless here.** With ~38 relevant documents per query, hitting *one*
+early is easy. I predict **MRR ≥ 0.5 for every strategy**, carrying almost no information. This is
+the mirror image of the in-domain corpus, where dense-but-tiny labels made R@5 useless; here
+sparse-metric MRR is the casualty. nDCG@10 and recall@100 are the metrics that should be read.
+
+**Prediction 2 — R@5's ceiling collapses.** `min(5, 38)/38 ≈ 0.13`, so the R@5 ceiling should land
+near **0.15**, and raw R@5 will look catastrophic (~0.10) while being a respectable fraction of
+attainable. Without the ceiling row this number would be unreadable — the strongest demonstration
+yet of why Phase 2 added it.
+
+**Prediction 3 — external anchor.** Published BM25 on NFCorpus is commonly cited at **nDCG@10 ≈
+0.325**. Having underestimated BM25 once already on SciFact, I now predict our BM25 lands
+**0.29–0.34**, i.e. close to published rather than well below it.
+
+**Prediction 4 — the mechanism hypothesis, under test.** SciFact produced the claim that *blending
+helps when the legs are comparably strong and hurts when one dominates*. On NFCorpus the published
+BM25 and MiniLM figures are close (≈0.325 vs ≈0.318), so the mechanism predicts **hybrid beats both
+again, significantly**. This is a genuine test: if the legs come out comparable and hybrid does
+*not* win, the mechanism I proposed after SciFact is wrong and I will say so.
+
+**Prediction 5 — graded versus binary.** Grade-2 judgments are rare (576 of 12,334, 4.7%). I predict
+graded nDCG@10 lands **within ±0.03 of what binary scoring would give**, because the grades are too
+sparse to move the ranking much. Low confidence, and worth measuring precisely because the
+"graded labels make nDCG informative" claim should be checked rather than assumed.
+
+**Prediction 6 — the candidate pool is the binding constraint at depth 30.** With ~38 relevant
+documents per query, a 30-candidate pool cannot contain them all. I predict the pool ceiling at
+depth 30 is **well below 0.5**, and that R@100 is much larger than R@10 — meaning depth, not
+ranking, is what limits recall on this dataset.
+

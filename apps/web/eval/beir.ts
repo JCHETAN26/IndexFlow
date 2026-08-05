@@ -49,8 +49,10 @@ export const BEIR_SUBSETS: Record<string, BeirSpec> = {
   nfcorpus: {
     name: "nfcorpus",
     url: "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
-    // Filled in on first verified download; see `pnpm eval:beir-pin`.
-    sha256: "",
+    sha256: "efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b",
+    // dev, not train. Train has 2,590 queries but binary-only judgments, while dev and test are
+    // both graded — so tuning on dev selects the weight on data of the same character it is
+    // scored on, avoiding the split-composition mismatch Phase 3 found in the in-domain set.
     tuneQrels: "dev",
   },
 };

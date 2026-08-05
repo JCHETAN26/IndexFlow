@@ -49,6 +49,18 @@ const STRATEGIES: Strategy[] = ["keyword", "semantic", "hybrid"];
 
 const SWEEP = Array.from({ length: 21 }, (_, i) => Number((i / 20).toFixed(2)));
 const INSERT_BATCH = 500;
+
+/**
+ * Retrieve this deep, then truncate to `CANDIDATE_LIMIT` for the headline numbers.
+ *
+ * Truncating a ranked list to k is exactly what retrieving k returns, for both legs (ES returns
+ * BM25's top-k by score; the semantic leg is `ORDER BY ... LIMIT k`), so one deep pass supports
+ * both the shipped configuration and the diagnostics. Retrieving deep is what makes recall@100 and
+ * the pool ceiling measurable at all — at depth 30 they are unanswerable by construction.
+ */
+const DIAG_DEPTH = Number(process.env.BEIR_DEPTH ?? 100);
+/** The k that actually reaches the generator: `retrieveContexts(query, 6, ...)` in the RAG path. */
+const SHIPPED_K = 6;
 const f2 = (n: number) => n.toFixed(2);
 const f3 = (n: number) => n.toFixed(3);
 const pct = (n: number) => (n * 100).toFixed(1).padStart(5) + "%";
@@ -80,6 +92,31 @@ function rankedDocs(r: Row, strat: Strategy, weight: number): string[] {
 const rankingsFor = (rows: Row[], strat: Strategy, w: number): number[][] =>
   rows.map((r) => ranksFromRanked(rankedDocs(r, strat, w), r.query.relevant));
 
+/** Truncate both legs to a depth — exactly equivalent to having retrieved at that depth. */
+const atDepth = (r: Row, d: number): Row => ({ ...r, kw: r.kw.slice(0, d), sm: r.sm.slice(0, d) });
+
+/**
+ * Fraction of relevant documents present anywhere in the union of the two legs' candidates.
+ *
+ * Separates "ranked badly" from "never retrieved". If this is well below 1, no amount of
+ * reranking can recover the missing documents and depth is the binding constraint — which is
+ * exactly the question `CANDIDATE_LIMIT = 30` raises on a dataset with ~38 relevant docs per query.
+ */
+function poolCeiling(rows: Row[]): number {
+  let sum = 0;
+  let n = 0;
+  for (const r of rows) {
+    const total = r.query.relevant.size;
+    if (total === 0) continue;
+    const pool = new Set([...r.kw, ...r.sm].map((h) => h.docId));
+    let found = 0;
+    for (const id of r.query.relevant.keys()) if (pool.has(id)) found++;
+    sum += found / total;
+    n++;
+  }
+  return n === 0 ? 0 : sum / n;
+}
+
 const labelsOf = (rows: Row[]) => rows.map((r) => ({ relevant: [...r.query.relevant.keys()] }));
 
 async function main() {
@@ -104,7 +141,10 @@ async function main() {
       `relevance ${stats.graded ? "GRADED" : "binary"}`,
   );
   console.log(`* Embedding: ${EMBED_MODEL} (${EMBED_DIM}-dim)`);
-  console.log(`* Retrieval depth: keyword ${CANDIDATE_LIMIT} / semantic ${CANDIDATE_LIMIT} (production)`);
+  console.log(
+    `* Retrieval depth: ${DIAG_DEPTH} per leg, truncated to ${CANDIDATE_LIMIT} (production CANDIDATE_LIMIT) ` +
+      `for the headline table; the full depth is used only for recall@100 and the pool ceiling`,
+  );
 
   // ── chunk + embed ───────────────────────────────────────────────────────
   const chunks: { docId: string; chunkId: string; index: number; content: string; tokenCount: number }[] = [];
@@ -160,7 +200,7 @@ async function main() {
     console.log(`[${Math.round((Date.now() - t0) / 1000)}s] keyword retrieval, ${ds.queries.length} queries...`);
     const kwByQuery: Hit[][] = [];
     for (const q of ds.queries) {
-      const hits = await keywordSearch(q.text, null, CANDIDATE_LIMIT, esIndex);
+      const hits = await keywordSearch(q.text, null, DIAG_DEPTH, esIndex);
       kwByQuery.push(
         hits.map((h) => ({ chunkId: h.chunkId, docId: docByUuid.get(h.documentId)!, score: h.score })),
       );
@@ -210,7 +250,7 @@ async function main() {
               FROM document_chunks dc
               WHERE dc.embedding IS NOT NULL
               ORDER BY dc.embedding <=> ${vec}::vector
-              LIMIT ${CANDIDATE_LIMIT}
+              LIMIT ${DIAG_DEPTH}
             `;
             rows.push({
               query: ds.queries[i],
@@ -230,8 +270,11 @@ async function main() {
   }
 
   // ── weight sweep on the tuning split ────────────────────────────────────
-  const tune = rows.filter((r) => r.query.split === "tune" && r.query.relevant.size > 0);
-  const test = rows.filter((r) => r.query.split === "test" && r.query.relevant.size > 0);
+  const deepTune = rows.filter((r) => r.query.split === "tune" && r.query.relevant.size > 0);
+  const deepTest = rows.filter((r) => r.query.split === "test" && r.query.relevant.size > 0);
+  // Everything scored below is at production depth; the deep lists are kept for diagnostics only.
+  const tune = deepTune.map((r) => atDepth(r, CANDIDATE_LIMIT));
+  const test = deepTest.map((r) => atDepth(r, CANDIDATE_LIMIT));
   const sweepRows = tune.length > 0 ? tune : test;
 
   // BEIR does not label query kinds, so the harness's balanced-by-kind criterion does not apply;
@@ -250,7 +293,8 @@ async function main() {
   console.log(`\n${"─".repeat(88)}`);
   console.log(`HELD-OUT — ${test.length} judged queries over ${stats.numDocs} documents`);
   console.log("─".repeat(88));
-  console.log("Strategy         MRR    R@1     R@5     R@10    P@3     nDCG@10");
+  console.log(`Strategy         MRR    R@1     R@${SHIPPED_K}*     R@10    P@3     nDCG@10`);
+  console.log(`  * R@${SHIPPED_K} is the k that reaches the generator (retrieveContexts(query, ${SHIPPED_K}, ...))`);
   console.log("─".repeat(88));
 
   const rankedByStrategy = new Map<Strategy, string[][]>();
@@ -263,7 +307,7 @@ async function main() {
       s.padEnd(15) +
         f2(mrr(rk, labels)).padEnd(7) +
         pct(recallAt(rk, labels, 1)).padEnd(8) +
-        pct(recallAt(rk, labels, 5)).padEnd(8) +
+        pct(recallAt(rk, labels, SHIPPED_K)).padEnd(8) +
         pct(recallAt(rk, labels, 10)).padEnd(8) +
         pct(precisionAt(rk, labels, 3)).padEnd(8) +
         pct(ndcgAtGraded(ranked, test.map((r) => r.query), 10)),
@@ -272,7 +316,7 @@ async function main() {
   const ceil = {
     mrr: ceilingFor(labels, "mrr"),
     r1: ceilingFor(labels, "recall", 1),
-    r5: ceilingFor(labels, "recall", 5),
+    rk: ceilingFor(labels, "recall", SHIPPED_K),
     r10: ceilingFor(labels, "recall", 10),
     p3: ceilingFor(labels, "precision", 3),
   };
@@ -280,12 +324,56 @@ async function main() {
     "ceiling".padEnd(15) +
       f2(ceil.mrr).padEnd(7) +
       pct(ceil.r1).padEnd(8) +
-      pct(ceil.r5).padEnd(8) +
+      pct(ceil.rk).padEnd(8) +
       pct(ceil.r10).padEnd(8) +
       pct(ceil.p3).padEnd(8) +
       pct(1),
   );
   console.log("─".repeat(88));
+
+  // ── depth diagnostics ───────────────────────────────────────────────────
+  // Does depth 30 limit recall, or does ranking? The pool ceiling answers it directly: it is the
+  // share of relevant documents present anywhere in the candidate union, so anything below it is
+  // reachable by better ranking and anything above it is unreachable at any amount of reranking.
+  console.log(`depth diagnostics — is CANDIDATE_LIMIT=${CANDIDATE_LIMIT} the binding constraint?`);
+  const deepLabels = labelsOf(deepTest);
+  for (const s of STRATEGIES) {
+    const shallow = rankingsFor(test, s, weight);
+    const deep = rankingsFor(deepTest, s, weight);
+    console.log(
+      `  ${s.padEnd(12)} R@10 ${pct(recallAt(shallow, labels, 10))}   ` +
+        `R@30 ${pct(recallAt(shallow, labels, CANDIDATE_LIMIT))}   ` +
+        `R@100 ${pct(recallAt(deep, deepLabels, 100))}   (last needs depth ${DIAG_DEPTH})`,
+    );
+  }
+  console.log(
+    `  candidate pool ceiling: ${pct(poolCeiling(test))} at depth ${CANDIDATE_LIMIT}, ` +
+      `${pct(poolCeiling(deepTest))} at depth ${DIAG_DEPTH}`,
+  );
+  console.log(
+    `  (pool ceiling = share of relevant documents present in EITHER leg's candidates. Recall\n` +
+      `   above this is unreachable — no reranker can retrieve what was never a candidate.)`,
+  );
+  console.log("─".repeat(88));
+
+  // Graded vs binary nDCG: quantifies what the grades are actually contributing, rather than
+  // assuming that a graded dataset automatically makes nDCG more informative.
+  if (ds.graded) {
+    console.log("graded vs binary nDCG@10 (what the relevance grades are worth):");
+    for (const s of STRATEGIES) {
+      const ranked = rankedByStrategy.get(s)!;
+      const gradedScore = ndcgAtGraded(ranked, test.map((r) => r.query), 10);
+      const flattened = test.map((r) => ({
+        relevant: new Map([...r.query.relevant.keys()].map((k) => [k, 1] as [string, number])),
+      }));
+      const binaryScore = ndcgAtGraded(ranked, flattened, 10);
+      console.log(
+        `  ${s.padEnd(12)} graded ${pct(gradedScore)}   binary ${pct(binaryScore)}   ` +
+          `delta ${(gradedScore - binaryScore >= 0 ? "+" : "") + ((gradedScore - binaryScore) * 100).toFixed(2)}pp`,
+      );
+    }
+    console.log("─".repeat(88));
+  }
 
   // ── significance ────────────────────────────────────────────────────────
   const rrOf = (s: Strategy) => {
