@@ -356,6 +356,41 @@ async function main() {
   );
   console.log("─".repeat(88));
 
+  // ── CANDIDATE_LIMIT sweep ───────────────────────────────────────────────
+  // What would raising CANDIDATE_LIMIT actually buy? Free to compute: every depth below is a
+  // truncation of the same depth-DIAG_DEPTH retrieval, which is exactly what retrieving at that
+  // depth returns. Quality only — the latency cost of a deeper pool is not measured here.
+  const DEPTHS = [10, 20, 30, 50, 100].filter((d) => d <= DIAG_DEPTH);
+  console.log(`CANDIDATE_LIMIT sweep — hybrid quality vs depth (production is ${CANDIDATE_LIMIT}):`);
+  console.log(
+    "  depth".padEnd(10) +
+      "MRR".padEnd(8) +
+      `R@${SHIPPED_K}`.padEnd(9) +
+      "R@10".padEnd(9) +
+      "nDCG@10".padEnd(10) +
+      "pool ceiling",
+  );
+  for (const d of DEPTHS) {
+    const at = deepTest.map((r) => atDepth(r, d));
+    const lab = labelsOf(at);
+    const rk = rankingsFor(at, "hybrid", weight);
+    const ranked = at.map((r) => rankedDocs(r, "hybrid", weight));
+    console.log(
+      `  ${String(d).padEnd(8)}` +
+        f2(mrr(rk, lab)).padEnd(8) +
+        pct(recallAt(rk, lab, SHIPPED_K)).padEnd(9) +
+        pct(recallAt(rk, lab, 10)).padEnd(9) +
+        pct(ndcgAtGraded(ranked, at.map((r) => r.query), 10)).padEnd(10) +
+        pct(poolCeiling(at)) +
+        (d === CANDIDATE_LIMIT ? "   <- production" : ""),
+    );
+  }
+  console.log(
+    "  Quality only. A deeper pool costs latency in both legs and in the blend, which this\n" +
+      "  benchmark does not measure — see the latency section of RESULTS.md.",
+  );
+  console.log("─".repeat(88));
+
   // Graded vs binary nDCG: quantifies what the grades are actually contributing, rather than
   // assuming that a graded dataset automatically makes nDCG more informative.
   if (ds.graded) {
