@@ -707,3 +707,86 @@ favours semantic), so removing the tuning queries should move keyword-flattering
 Prediction: **all six still pass**, with "hybrid best on exact queries" the narrowest margin. If any
 floor fails I will report it and not touch the floor.
 
+### Phase 4 result
+
+Run: [CI 30964731360](https://github.com/JCHETAN26/IndexFlow/actions/runs/30964731360), all jobs green.
+
+```
+95% MARGINAL bootstrap intervals (held-out):
+  keyword         MRR 75% [62%–87%]      R@1 62% [45%–77%]      R@5 82% [67%–94%]
+  semantic        MRR 97% [92%–100%]     R@1 88% [77%–97%]      R@5 100% [100%–100%]
+  hybrid          MRR 89% [81%–96%]      R@1 76% [62%–88%]      R@5 100% [100%–100%]
+  hybrid+rerank   MRR 93% [85%–98%]      R@1 83% [70%–94%]      R@5 100% [100%–100%]
+
+95% PAIRED bootstrap on the per-query MRR difference (held-out):
+  Δ MRR semantic − keyword          +0.22 [ 0.11, 0.35]   excludes zero: yes   SIGNIFICANT
+  Δ MRR hybrid+rerank − keyword     +0.18 [ 0.08, 0.28]   excludes zero: yes   SIGNIFICANT
+  Δ MRR hybrid − keyword            +0.14 [ 0.07, 0.23]   excludes zero: yes   SIGNIFICANT
+  Δ MRR semantic − hybrid           +0.08 [ 0.01, 0.16]   excludes zero: yes   SIGNIFICANT
+  Δ MRR semantic − hybrid+rerank    +0.04 [-0.03, 0.13]   excludes zero: no    not significant
+  Δ MRR hybrid+rerank − hybrid      +0.03 [-0.03, 0.10]   excludes zero: no    not significant
+```
+
+**The load-bearing prediction is confirmed, and the contrast is visible in one screen.** Semantic's
+marginal interval [92%–100%] overlaps hybrid's [81%–96%] — by the repo's current reasoning that
+gap is "not a ranking". The paired interval on the same data is **+0.08 [0.01, 0.16] and excludes
+zero.** The overlap was an artifact of discarding the pairing, exactly as pre-registered.
+
+So: **"blending a weak keyword leg into a strong semantic one measurably hurts retrieval on this
+corpus" is a statistically supported negative finding**, not noise. `RESULTS.md` currently says the
+opposite about its own result, and is wrong in its own disfavour.
+
+Predictions scored: **five of six correct**, three of them to the exact hundredth (+0.22, +0.08,
++0.18, +0.14 all as predicted). The miss is `hybrid+rerank − hybrid`, where I leaned "excludes
+zero" and it does not — I had flagged that one as low confidence, which is the only reason the miss
+is not worse.
+
+**A finding that cuts against the repo, recorded because it hurts.** `hybrid+rerank − hybrid` is
+**+0.03 [−0.03, 0.10], not significant.** The README presents reranking as a demonstrated
+improvement ("It now scores MRR 0.90, above plain hybrid's 0.85"). At n=33 that improvement is not
+distinguishable from zero. The reranker may well help — the point estimate is positive at every
+depth tested — but the evidence currently on record does not support stating it as a result.
+Likewise `semantic − hybrid+rerank` is not significant, so reranked hybrid and semantic-alone are
+statistically indistinguishable here.
+
+### Phase 5 result
+
+| gate row | floor | whole set (before) | held-out (after) | margin | verdict |
+|---|---|---|---|---|---|
+| keyword R@1 on exact | 50% | 92% | **87%** | +37pp | PASS |
+| semantic R@1 on paraphrase | 70% | 87% | **83%** | +13pp | PASS |
+| semantic MRR overall | 85% | 97% | 97% | +12pp | PASS (already held-out) |
+| hybrid R@5 overall | 90% | 100% | 100% | +10pp | PASS (already held-out) |
+| hybrid best on exact queries | 85% | 95% | **93%** | +8pp | PASS |
+| hybrid does not collapse on paraphrase | 75% | 0.87 | **0.80** | +5pp | PASS |
+
+**All six pass, as predicted.** Every leaked row moved *down* when the tuning queries were removed,
+in the direction Phase 3 anticipated from the split-composition difference.
+
+I called the wrong row as most at risk: I predicted "hybrid best on exact queries", but the
+narrowest margin is **"hybrid does not collapse on paraphrase" at 0.80 against a 0.75 floor** — a
+5-point margin, and it fell 7 points when the leak was closed. That row is now one bad paraphrase
+query away from failing CI.
+
+**The material finding is what the leak was concealing.** On held-out exact queries:
+
+```
+            keyword        semantic       hybrid         hybrid+rerank
+exact       87% / 0.97     93% / 1.00     93% / 1.00     93% / 1.00     ← held-out
+exact       92% / 0.98     86% / 0.94     95% / 1.00     92% / 0.98     ← whole set
+```
+
+On the whole set hybrid looks uniquely strong on exact queries (95%/1.00 against semantic's
+86%/0.94), and that is the basis of the claim in `RESULTS.md` that "hybrid is the best
+configuration for exact-match queries" — the property that replaced the retired
+"hybrid beats everything" gate. **On held-out data it is a three-way tie: semantic, hybrid and
+hybrid+rerank all score R@1 93% and MRR 1.00.** Hybrid is not the best configuration for exact
+queries; it is tied, and the apparent advantage came from the 30 tuning queries that selected its
+blend weight.
+
+The gate row `hybrid best on exact queries` therefore no longer tests what its name claims. It
+still passes, but it is now asserting a property hybrid shares with two other strategies. Flagged
+rather than changed — renaming or re-specifying a gate is a decision for the user.
+
+**Gate: Phases 4 and 5 complete, all six floors pass. Reported to the user.**
+
