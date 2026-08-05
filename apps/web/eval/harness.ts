@@ -30,6 +30,7 @@ import {
   mrr,
   ndcgAt,
   precisionAt,
+  hitRateAt,
   ranksForQuery,
   recallAt,
   rejectionSignal,
@@ -168,6 +169,11 @@ export interface EvalReport {
   byKindAll: Record<QueryKind, Record<Strategy, KindMetrics>>;
   /** Attainable maxima for `strategies`, on the held-out split. */
   ceilings: Ceilings;
+  /**
+   * Share of judged queries with ANY relevant document in the top k — what a reader assumes R@1
+   * means. Unlike recall@k it is not capped below 1 by multi-relevant queries.
+   */
+  hitRate: Record<Strategy, { 1: number; 3: number; 5: number }>;
   /** Correctly returning nothing for an unanswerable query, measured apart from ranking. */
   rejection: RejectionReport;
   sweep: { weight: number; mrr: number }[];
@@ -613,6 +619,12 @@ export async function runEvaluation(
       ndcg: { 5: ceilingFor(headlineRows, "ndcg", 5) },
       mrr: ceilingFor(headlineRows, "mrr"),
     },
+    hitRate: Object.fromEntries(
+      strategies.map((st) => {
+        const rk = ranksFor(headlineRows, st, weight);
+        return [st, { 1: hitRateAt(rk, headlineRows, 1), 3: hitRateAt(rk, headlineRows, 3), 5: hitRateAt(rk, headlineRows, 5) }];
+      }),
+    ) as Record<Strategy, { 1: number; 3: number; 5: number }>,
     rejection,
     byKind: {
       exact: Object.fromEntries(strategies.map((s) => [s, kindMetric(exact, s)])) as Record<Strategy, KindMetrics>,

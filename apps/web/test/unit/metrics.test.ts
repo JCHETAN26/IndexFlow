@@ -33,6 +33,7 @@ import {
   bootstrapDelta,
   ceilingFor,
   dedupDocs,
+  hitRateAt,
   mrr,
   ndcgAt,
   ndcgAtGraded,
@@ -410,5 +411,34 @@ describe("degenerate input", () => {
   it("ranksForQuery returns no ranks when the ranking is empty", () => {
     expect(ranksForQuery([], ["a"])).toEqual([]);
     expect(ranksForQuery(["x", "y"], [])).toEqual([]);
+  });
+});
+
+// ── hit rate vs recall ────────────────────────────────────────────────────
+describe("hitRateAt", () => {
+  it("reaches 1.0 for an oracle, where recall@1 cannot", () => {
+    const ranks = ranksOf(oracle);
+    expect(hitRateAt(ranks, TEST_ROWS, 1)).toBeCloseTo(1, 12);
+    // The whole reason this metric exists: R@1 is capped at 31/33 by multi-relevant queries.
+    expect(recallAt(ranks, TEST_ROWS, 1)).toBeLessThan(hitRateAt(ranks, TEST_ROWS, 1));
+  });
+
+  it("counts a query once however many relevant documents it finds", () => {
+    const rows: Labeled[] = [{ relevant: ["a", "b"] }];
+    expect(hitRateAt([[1, 2]], rows, 5)).toBe(1);
+    expect(hitRateAt([[1]], rows, 5)).toBe(1);
+    // recall distinguishes them; hit rate deliberately does not.
+    expect(recallAt([[1, 2]], rows, 5)).toBe(1);
+    expect(recallAt([[1]], rows, 5)).toBe(0.5);
+  });
+
+  it("scores zero when nothing relevant is inside the cut-off", () => {
+    expect(hitRateAt([[7]], [{ relevant: ["a"] }], 5)).toBe(0);
+  });
+
+  it("excludes unjudged queries and never returns NaN", () => {
+    const rows: Labeled[] = [{ relevant: ["a"] }, { relevant: [] }];
+    expect(hitRateAt([[1], []], rows, 3)).toBe(1);
+    expect(hitRateAt([[], []], [{ relevant: [] }], 3)).toBe(0);
   });
 });

@@ -72,6 +72,29 @@ export function recallAt(rankings: number[][], evals: Labeled[], k: number): num
 }
 
 /**
+ * Fraction of judged queries with **at least one** relevant document in the top k.
+ *
+ * This is what people usually mean by "the right answer was first N% of the time", and it is NOT
+ * what `recallAt(…, 1)` measures. Recall@1 divides by the number of relevant documents, so a query
+ * with two relevant documents can score at most 0.5 at k=1 no matter how good the ranking is — on
+ * the in-domain label set that caps recall@1 at 31/33 for a perfect ranker. Hit rate has no such
+ * cap: a perfect ranker scores exactly 1.0.
+ *
+ * Both are reported. Recall@k is the standard and comparable to published baselines; hit rate is
+ * the one that means what a reader assumes it means.
+ */
+export function hitRateAt(rankings: number[][], evals: Labeled[], k: number): number {
+  const n = judgedCount(evals);
+  if (n === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < rankings.length; i++) {
+    if (evals[i].relevant.length === 0) continue;
+    if (rankings[i].some((r) => r <= k)) sum += 1;
+  }
+  return sum / n;
+}
+
+/**
  * Mean reciprocal rank of the first relevant document, over judged queries. A judged query whose
  * relevant document was never retrieved scores 0; an unjudged query is not scored at all.
  */

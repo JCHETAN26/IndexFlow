@@ -119,6 +119,32 @@ function poolCeiling(rows: Row[]): number {
 
 const labelsOf = (rows: Row[]) => rows.map((r) => ({ relevant: [...r.query.relevant.keys()] }));
 
+/**
+ * Best recall@k any reordering of the existing candidate pool could achieve.
+ *
+ * The pool ceiling says what is *reachable* at all; this says what is reachable **at the cut-off a
+ * consumer actually reads**. The gap between measured recall@k and this number is the headroom a
+ * perfect reranker would have — everything above it needs deeper retrieval or better candidates,
+ * not better ordering.
+ *
+ * Needed because "a reranker can add at most 1.5 points" was derived at k=30 and does not transfer
+ * to k=6, which is what the RAG path consumes.
+ */
+function oracleRerankAt(rows: Row[], k: number): number {
+  let sum = 0;
+  let n = 0;
+  for (const r of rows) {
+    const total = r.query.relevant.size;
+    if (total === 0) continue;
+    const pool = new Set([...r.kw, ...r.sm].map((h) => h.docId));
+    let inPool = 0;
+    for (const id of r.query.relevant.keys()) if (pool.has(id)) inPool++;
+    sum += Math.min(k, inPool) / total;
+    n++;
+  }
+  return n === 0 ? 0 : sum / n;
+}
+
 async function main() {
   const subset = process.env.BEIR_SUBSET ?? "scifact";
   const maxDocs = process.env.BEIR_MAX_DOCS ? Number(process.env.BEIR_MAX_DOCS) : undefined;
@@ -388,6 +414,27 @@ async function main() {
   console.log(
     "  Quality only. A deeper pool costs latency in both legs and in the blend, which this\n" +
       "  benchmark does not measure — see the latency section of RESULTS.md.",
+  );
+  console.log("─".repeat(88));
+
+  // ── how much could a perfect reranker add, at the k that ships? ─────────
+  console.log(`reranker headroom at production depth ${CANDIDATE_LIMIT} — what perfect reordering would buy:`);
+  console.log("  k".padEnd(8) + "hybrid R@k".padEnd(14) + "oracle rerank".padEnd(16) + "headroom".padEnd(12) + "label ceiling");
+  for (const k of [SHIPPED_K, 10, CANDIDATE_LIMIT]) {
+    const rk = rankingsFor(test, "hybrid", weight);
+    const actual = recallAt(rk, labels, k);
+    const oracle = oracleRerankAt(test, k);
+    console.log(
+      `  ${String(k).padEnd(6)}` +
+        pct(actual).padEnd(14) +
+        pct(oracle).padEnd(16) +
+        (`+` + ((oracle - actual) * 100).toFixed(1) + "pp").padEnd(12) +
+        pct(ceilingFor(labels, "recall", k)),
+    );
+  }
+  console.log(
+    "  oracle rerank = best recall@k achievable by reordering the pool already retrieved.\n" +
+      "  headroom above it needs deeper retrieval or better candidates, not better ranking.",
   );
   console.log("─".repeat(88));
 

@@ -11,6 +11,7 @@ import { runEvaluation, type EvalReport } from "./harness";
 
 const pct = (n: number) => (n * 100).toFixed(0).padStart(3) + "%";
 const f2 = (n: number) => n.toFixed(2);
+const f4 = (n: number) => n.toFixed(4);
 
 function print(r: EvalReport) {
   const strategies = ["keyword", "semantic", "hybrid", "hybrid+rerank"] as const;
@@ -75,6 +76,15 @@ function print(r: EvalReport) {
     console.log(`${s.padEnd(15)} ${of(m.mrr, c.mrr)}   ${row}`);
   }
   console.log("─".repeat(80));
+  // R@1 is a recall and is capped below 1 by multi-relevant queries. Hit rate is the metric a
+  // reader assumes R@1 to be: "the right answer was in the top k".
+  console.log("hit rate — share of queries with ANY relevant document in the top k:");
+  for (const s of strategies) {
+    const hr = r.hitRate[s];
+    console.log(`  ${s.padEnd(15)} HR@1 ${pct(hr[1])}   HR@3 ${pct(hr[3])}   HR@5 ${pct(hr[5])}`);
+  }
+  console.log("  (a perfect ranker scores 100% here; its R@1 on this label set is capped at 94%)");
+  console.log("─".repeat(80));
   console.log("95% MARGINAL bootstrap intervals (held-out):");
   for (const s of strategies) {
     console.log(
@@ -128,8 +138,21 @@ function print(r: EvalReport) {
   }
   console.log("─".repeat(80));
   console.log(`hybrid weight sweep on the TUNING split (keyword weight → MRR), best = ${f2(r.hybridWeight)}:`);
+  // 4dp, so a reader can see whether the plateau is genuinely flat or an artifact of rounding
+  // against the `bestScore - 1e-9` tie-break. At 2dp a 0.0004 difference is invisible and the
+  // tie-break silently decides the weight.
   console.log(
-    r.sweep.map((s) => `${f2(s.weight)}:${f2(s.mrr)}${s.weight === r.hybridWeight ? "*" : " "}`).join("  "),
+    r.sweep
+      .map((s) => `${f2(s.weight)}:${f4(s.mrr)}${s.weight === r.hybridWeight ? "*" : " "}`)
+      .join("  "),
+  );
+  const bestMrr = Math.max(...r.sweep.map((s) => s.mrr));
+  const plateau = r.sweep.filter((s) => s.mrr >= bestMrr - 1e-9);
+  console.log(
+    `  plateau: ${plateau.length} of ${r.sweep.length} weights within 1e-9 of the maximum` +
+      (plateau.length > 1
+        ? ` (${f2(plateau[0].weight)}\u2013${f2(plateau[plateau.length - 1].weight)}) \u2014 the tie-break picks its centre`
+        : ""),
   );
   console.log("─".repeat(80));
   
