@@ -135,10 +135,13 @@ result.
 **Reranking is implemented but off by default, and its benefit is not statistically supported.**
 It scores MRR 0.93 against plain hybrid's 0.89, but the paired interval is **+0.03 [−0.03, 0.10]**,
 which includes zero at n=33. The point estimate is positive in every configuration tested, so it
-may well help — 33 queries cannot show it. Separately, the NFCorpus pool-ceiling analysis bounds
-what any reranker could contribute at `CANDIDATE_LIMIT = 30`: hybrid already retrieves 94% of the
-relevant documents reachable at that depth, leaving at most 1.5 points on the table. Depth, not
-reranking, is where recall lives.
+may well help — 33 queries cannot show it.
+
+**Retrieval depth is not the lever either.** Sweeping `CANDIDATE_LIMIT` on NFCorpus from 30 to 100
+raises the reachable pool by a third but moves R@6 from 14.4% to 14.1% and nDCG@10 by 0.7 points:
+the extra candidates are never ranked high enough to be consumed. It stays at 30. At k=6 hybrid
+retrieves 14.4% against a label ceiling of 50.2%, so the headroom is in *ordering* the pool it
+already has — how much is an open question, not a claim.
 
 **The citation judge is lenient, so treat citations 100% as an upper bound.** A blind 40-row human
 audit put `bespoke-minicheck` at 100% agreement on faithfulness (κ = 1.00), but `qwen2.5` passed

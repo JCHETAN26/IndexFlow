@@ -269,9 +269,39 @@ NFCorpus — is CANDIDATE_LIMIT=30 the binding constraint?
 
 The pool ceiling is the share of relevant documents present in *either* leg's candidates — recall
 above it is unreachable, because no reranker can promote a document that was never retrieved.
-Hybrid's R@30 of 22.8% against a 24.3% pool ceiling means **ranking is capturing 94% of what is
-reachable**. A reranker's maximum possible contribution at depth 30 is 1.5 percentage points. The
-lever for recall on a densely-labelled corpus is `CANDIDATE_LIMIT`, not a better ranker.
+Hybrid's R@30 of 22.8% against a 24.3% pool ceiling means that **at k=30, ranking captures 94% of
+what is reachable**, leaving at most 1.5 points for any reranker.
+
+**That does not transfer to the k that ships, and raising `CANDIDATE_LIMIT` does not help either.**
+Sweeping the depth — each row a truncation of the same depth-100 retrieval, so each is exactly what
+retrieving at that depth returns:
+
+```
+  depth   MRR     R@6      R@10     nDCG@10   pool ceiling
+  10      0.53     13.5%    15.7%    31.7%     17.7%
+  20      0.53     14.1%    16.4%    32.9%     22.0%
+  30      0.53     14.4%    16.4%    33.2%     24.3%   <- production
+  50      0.53     14.1%    16.9%    33.7%     27.7%
+  100     0.54     14.1%    16.8%    33.9%     32.6%
+```
+
+Going 30 → 100 raises the pool ceiling by a third (24.3% → 32.6%) and buys **nothing at the k that
+reaches the generator**: R@6 goes 14.4% → 14.1%, R@10 gains 0.4 points, nDCG@10 gains 0.7. The
+extra candidates are reachable but never ranked high enough to be consumed. **`CANDIDATE_LIMIT`
+stays at 30** — a deeper pool costs latency in both legs and in the blend and returns nothing
+measurable.
+
+> **Correction.** An earlier version of this section concluded "the lever for recall on a densely-
+> labelled corpus is `CANDIDATE_LIMIT`, not a better ranker." The depth sweep shows that is wrong
+> at consumable *k*. It was inferred from R@30 and R@100 — cutoffs nobody consumes — and does not
+> hold at k=6 or k=10.
+>
+> The corrected picture: at **k=30** ranking is nearly optimal and depth is the only lever, but
+> that lever moves nothing a user sees. At **k=6** hybrid retrieves 14.4% against a *label* ceiling
+> of 50.2%, and 24.3% of relevant documents are sitting in the candidate pool — so there is real
+> headroom for better *ordering* within the existing pool. The oracle-rerank ceiling at k=6 (the
+> best any reordering of the depth-30 pool could achieve) is **not yet measured**, so the size of
+> that headroom is an open question rather than a claim.
 
 ### Graded relevance is worth almost nothing here
 
