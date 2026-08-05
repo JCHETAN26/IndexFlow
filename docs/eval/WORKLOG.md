@@ -390,3 +390,95 @@ Secondary predictions:
   beneath it, and a rejection block.
 - Unit expectations re-derived and re-registered above; 54 tests pass locally.
 
+### Result — before and after
+
+Run: [CI 30951555564](https://github.com/JCHETAN26/IndexFlow/actions/runs/30951555564), `eval` job,
+`ubuntu-latest`, same dataset fingerprints (queries `787aeddbf260`, corpus `29789f602b8a`).
+
+```
+Strategy          MRR   R@1   R@3   R@5   P@3   nDCG@5
+keyword          0.75    62%    79%    82%    29%    74%
+semantic         0.97    88%   100%   100%    37%    98%
+hybrid           0.88    73%    97%   100%    36%    91%
+hybrid+rerank    0.93    83%    97%   100%    36%    95%
+ceiling          1.00    94%   100%   100%    37%   100%
+────────────────────────────────────────────────────────
+as % of attainable ceiling:
+keyword          75%    66%    79%    82%    78%    74%
+semantic         97%    94%   100%   100%   100%    98%
+hybrid           88%    77%    97%   100%    97%    91%
+hybrid+rerank    93%    89%    97%   100%    97%    95%
+```
+
+**Every pre-registered prediction confirmed, including the load-bearing one.** R@5 is exactly
+**100%** for semantic, hybrid and hybrid+rerank — so the Phase 0 arithmetic was right about which
+queries those strategies were missing, namely none. Metric-by-metric the shift is exactly 34/33.
+
+Secondary predictions, all confirmed:
+
+- Exact-query numbers did not move: 92%/0.98, 86%/0.94, 95%/1.00, 92%/0.98 — byte-identical to the
+  pre-change run, as required, since the unanswerable query is a paraphrase.
+- Paraphrase numbers rose: semantic 84%/0.92 → 87%/0.95, hybrid 69%/0.83 → 71%/0.85.
+- The sweep selected 0.55 again, with an identical sweep curve.
+- No gate row failed.
+
+### What the ceiling row exposes
+
+The `% of attainable ceiling` table makes the saturation impossible to miss, and it is worse than
+the raw numbers suggested:
+
+- **Semantic is at 100% of ceiling on R@3, R@5 *and* P@3** — three of six metrics maxed out.
+- **All three non-keyword strategies are at 100% of ceiling on R@5.** The benchmark cannot
+  distinguish them at k≥5 at all; the metric has no remaining resolution.
+- The bootstrap interval for hybrid R@5 is now **[100%–100%]** — zero width. A degenerate
+  confidence interval is the clearest possible signal that a measurement has stopped measuring.
+- P@3 = 37% now reads correctly as **100% of ceiling** rather than as a poor precision. Before this
+  change a reader had to derive the 37% cap from the label file to interpret the number at all.
+
+Keyword is the only strategy with real headroom left (66–82% of ceiling), which is precisely why it
+is the least interesting configuration to keep tuning.
+
+### Rejection — a genuine finding, on n=1
+
+```
+keyword   unanswerable top 2.882   answerable top min 0.053 / med 5.193 / max 11.338   NOT separable
+semantic  unanswerable top 0.094   answerable top min 0.196 / med 0.477 / max 0.723   separable
+hybrid    not measurable — min-max normalisation puts every query's top at 1.000
+```
+
+**The semantic leg carries a usable abstention signal and the blend destroys it.** Cosine on the
+unanswerable query is 0.094, below the *minimum* over all 33 answerable queries (0.196); any
+threshold in that gap would abstain correctly and accept everything else. BM25 cannot do this — its
+unanswerable score of 2.882 sits above the answerable minimum of 0.053, inside the range, because
+BM25's scale moves with query IDF and is not comparable across queries. And hybrid cannot be asked
+the question at all, because normalisation discards the absolute magnitude that carries the signal.
+
+This connects directly to the Phase 3 hypothesis: min-max normalisation is not merely reshaping
+scores, it is destroying information the semantic leg had. Filed as a Phase 3/4 input.
+
+**Weight of evidence: n = 1.** One unanswerable query cannot establish a rejection rate, and
+threshold calibration is impossible with zero unanswerable queries in the tuning split. The right
+fix is label work — unanswerable queries in *both* splits — which belongs with Phase 8.
+
+### Cross-check after the change
+
+[CI 30963101701](https://github.com/JCHETAN26/IndexFlow/actions/runs/30963101701) — green, with
+**declared scale 1.000000 and no correction applied**. Harness and `pytrec_eval` now agree
+exactly, residuals 0 to 1.67e−16. The harness's treatment of unanswerable queries is now the
+reference convention rather than merely a documented deviation from it.
+
+One self-inflicted failure first: `crosscheck.py` recomputed `scale = judged/total` locally instead
+of reading the declared `predictedScale`, so it re-applied the retired correction and reported
+MISMATCH on 18 rows whose harness and reference columns were *identical*. The output made this
+obvious — the two value columns matched and only the derived column differed. Fixed by reading the
+declared scale.
+
+### Not done in this phase
+
+`RESULTS.md` and `README.md` still carry the pre-Phase-2 numbers. Deliberate: Phase 3 changes
+retrieval depth, which will move them again, and rewriting the canonical results file twice would
+put two supersession notices in it for one week of work. The numbers above are recorded here with
+their run link in the meantime.
+
+**Gate: Phase 2 complete, all predictions confirmed. Reported to the user.**
+
