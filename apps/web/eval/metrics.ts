@@ -164,6 +164,78 @@ export function ceilingFor(
 export const fractionOfCeiling = (value: number, ceiling: number): number =>
   ceiling === 0 ? 0 : value / ceiling;
 
+/** Deterministic mulberry32. Fixed seed so a published interval does not jitter between runs. */
+export function seededRandom(seed = 0x9e3779b9): () => number {
+  let s = seed;
+  return () => {
+    s |= 0;
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export interface Interval {
+  value: number;
+  lo: number;
+  hi: number;
+}
+
+/** Percentile bootstrap of the mean: resample with replacement, take the 2.5th/97.5th percentiles. */
+export function bootstrapCI(perQuery: number[], samples = 2000): Interval {
+  const n = perQuery.length;
+  if (n === 0) return { value: 0, lo: 0, hi: 0 };
+  const value = perQuery.reduce((a, b) => a + b, 0) / n;
+  const rand = seededRandom();
+  const means: number[] = [];
+  for (let s = 0; s < samples; s++) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += perQuery[(rand() * n) | 0];
+    means.push(sum / n);
+  }
+  means.sort((a, b) => a - b);
+  return { value, lo: means[Math.floor(0.025 * samples)], hi: means[Math.floor(0.975 * samples) - 1] };
+}
+
+export interface Delta extends Interval {
+  /** True iff the 95% interval on the paired difference lies wholly above or wholly below zero. */
+  excludesZero: boolean;
+}
+
+/**
+ * Paired percentile bootstrap of a difference between two strategies.
+ *
+ * The two strategies are scored on the *same* queries, so the correct comparison resamples
+ * **query indices** and averages the per-query difference — not the two means independently.
+ * Overlapping marginal intervals do not imply an insignificant difference: per-query correlation
+ * is variance that the paired difference removes and two marginal intervals keep. On a set this
+ * small that difference routinely decides whether a real effect is visible at all.
+ *
+ * Both vectors must be indexed by the same queries, in the same order.
+ */
+export function bootstrapDelta(a: number[], b: number[], samples = 2000): Delta {
+  if (a.length !== b.length) {
+    throw new Error(`bootstrapDelta needs paired vectors, got ${a.length} and ${b.length}`);
+  }
+  const n = a.length;
+  if (n === 0) return { value: 0, lo: 0, hi: 0, excludesZero: false };
+
+  const diff = a.map((x, i) => x - b[i]);
+  const value = diff.reduce((s, d) => s + d, 0) / n;
+  const rand = seededRandom();
+  const means: number[] = [];
+  for (let s = 0; s < samples; s++) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += diff[(rand() * n) | 0];
+    means.push(sum / n);
+  }
+  means.sort((x, y) => x - y);
+  const lo = means[Math.floor(0.025 * samples)];
+  const hi = means[Math.floor(0.975 * samples) - 1];
+  return { value, lo, hi, excludesZero: lo > 0 || hi < 0 };
+}
+
 /**
  * Top raw retrieval score per query, split by whether the query is answerable.
  *

@@ -22,6 +22,8 @@ import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsC
 import { rerank } from "../lib/rerank";
 import { CANDIDATE_LIMIT } from "../lib/retrieve";
 import {
+  bootstrapCI,
+  bootstrapDelta,
   ceilingFor,
   dedupDocs,
   judgedCount,
@@ -31,6 +33,8 @@ import {
   ranksForQuery,
   recallAt,
   rejectionSignal,
+  type Delta,
+  type Interval,
   type RejectionSignal,
 } from "./metrics";
 import corpus from "./corpus.json";
@@ -84,11 +88,11 @@ export interface Regression {
   rerankerScore: number | null;
   likelyReason: string;
 }
-/** 95% bootstrap interval around a metric, so a difference can be read as signal or noise. */
-export interface Interval {
-  value: number;
-  lo: number;
-  hi: number;
+/** A pairwise comparison between two strategies on the same queries. */
+export interface StrategyDelta {
+  a: Strategy;
+  b: Strategy;
+  delta: Delta;
 }
 
 /**
@@ -149,14 +153,23 @@ export interface EvalReport {
    * them. `strategiesAll` keeps the whole-set figures for continuity with earlier runs.
    */
   strategiesAll: Record<Strategy, StrategyMetrics>;
-  /** 95% bootstrap CIs for the headline hybrid metrics on the held-out split. */
-  ci: { hybridMrr: Interval; hybridR1: Interval; hybridR5: Interval };
+  /** Marginal 95% bootstrap CIs on the held-out split, for every strategy. */
+  ci: { mrr: Record<Strategy, Interval>; r1: Record<Strategy, Interval>; r5: Record<Strategy, Interval> };
+  /**
+   * Paired bootstrap on the per-query MRR difference, for every ordered pair. This is the test
+   * that answers "is A better than B"; the marginal intervals above cannot, because they discard
+   * the per-query pairing.
+   */
+  deltas: StrategyDelta[];
   strategies: Record<Strategy, StrategyMetrics>;
+  /** By query kind on the HELD-OUT split — what the gate scores. */
+  byKind: Record<QueryKind, Record<Strategy, KindMetrics>>;
+  /** By query kind on tune+test, kept for continuity with numbers published before 2026-08-05. */
+  byKindAll: Record<QueryKind, Record<Strategy, KindMetrics>>;
   /** Attainable maxima for `strategies`, on the held-out split. */
   ceilings: Ceilings;
   /** Correctly returning nothing for an unanswerable query, measured apart from ranking. */
   rejection: RejectionReport;
-  byKind: Record<QueryKind, Record<Strategy, KindMetrics>>;
   sweep: { weight: number; mrr: number }[];
   regressions: Regression[];
   gate: GateRow[];
@@ -174,42 +187,6 @@ const BOOTSTRAP_SAMPLES = 2000;
 
 const sha8 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 12);
-
-/**
- * Percentile bootstrap: resample the per-query scores with replacement and take the 2.5th and
- * 97.5th percentiles. With a few dozen queries the interval is wide, and that is the point —
- * it makes "0.96 vs 0.94" legible as overlapping rather than as a ranking.
- *
- * Deterministic (fixed seed) so re-running the eval does not jitter the published interval.
- */
-function bootstrapCI(perQuery: number[], samples = BOOTSTRAP_SAMPLES): Interval {
-  const n = perQuery.length;
-  const value = n === 0 ? 0 : perQuery.reduce((a, b) => a + b, 0) / n;
-  if (n === 0) return { value: 0, lo: 0, hi: 0 };
-
-  // Small deterministic PRNG (mulberry32) — no dependency, and a fixed seed keeps CIs stable.
-  let seed = 0x9e3779b9;
-  const rand = () => {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-
-  const means: number[] = [];
-  for (let s = 0; s < samples; s++) {
-    let sum = 0;
-    for (let i = 0; i < n; i++) sum += perQuery[(rand() * n) | 0];
-    means.push(sum / n);
-  }
-  means.sort((a, b) => a - b);
-  return {
-    value,
-    lo: means[Math.floor(0.025 * samples)],
-    hi: means[Math.floor(0.975 * samples) - 1],
-  };
-}
 
 class Rollback extends Error {}
 
@@ -475,8 +452,11 @@ export async function runEvaluation(
   };
 
   const strategies = ["keyword", "semantic", "hybrid", "hybrid+rerank"] as const;
-  const exact = evals.filter((e) => e.kind === "exact");
-  const para = evals.filter((e) => e.kind === "paraphrase");
+  // Whole-set slices, kept only for continuity with numbers published before 2026-08-05. The gate
+  // scores the held-out slices below; these four rows used to feed it, which leaked the 30 tuning
+  // queries that selected the blend weight into four of six gate rows.
+  const exactAll = evals.filter((e) => e.kind === "exact");
+  const paraAll = evals.filter((e) => e.kind === "paraphrase");
 
   const regressions: Regression[] = [];
   const hybridRanks = ranksFor(evals, "hybrid", weight);
@@ -545,6 +525,42 @@ export async function runEvaluation(
       answerable: r.relevant.length > 0,
     }));
   const numUnanswerable = headlineRows.length - judgedIdx.length;
+  // Held-out slices by kind — what the gate scores from now on.
+  const exact = headlineRows.filter((e) => e.kind === "exact");
+  const para = headlineRows.filter((e) => e.kind === "paraphrase");
+
+  // Per-query reciprocal rank on the judged held-out queries, per strategy. Indexed identically
+  // across strategies, which is what makes the paired bootstrap below valid.
+  const perQueryRR = (strat: Strategy): number[] => {
+    const rk = ranksFor(headlineRows, strat, weight);
+    return judgedIdx.map((i) => (rk[i].length > 0 ? 1 / rk[i][0] : 0));
+  };
+  const perQueryHit = (strat: Strategy, k: number): number[] => {
+    const rk = ranksFor(headlineRows, strat, weight);
+    return judgedIdx.map(
+      (i) => rk[i].filter((x) => x <= k).length / headlineRows[i].relevant.length,
+    );
+  };
+  const rrByStrategy = Object.fromEntries(strategies.map((s) => [s, perQueryRR(s)])) as Record<
+    Strategy,
+    number[]
+  >;
+
+  // Every ordered pair, better-first, so a positive delta always reads as "a beats b".
+  const deltas: StrategyDelta[] = [];
+  for (let i = 0; i < strategies.length; i++) {
+    for (let j = i + 1; j < strategies.length; j++) {
+      const [a, b] = [strategies[i], strategies[j]];
+      const d = bootstrapDelta(rrByStrategy[a], rrByStrategy[b], BOOTSTRAP_SAMPLES);
+      deltas.push(d.value >= 0 ? { a, b, delta: d } : {
+        a: b,
+        b: a,
+        delta: { ...d, value: -d.value, lo: -d.hi, hi: -d.lo },
+      });
+    }
+  }
+  deltas.sort((x, y) => y.delta.value - x.delta.value);
+
   const rejection: RejectionReport = {
     numAnswerable: judgedIdx.length,
     numUnanswerable,
@@ -573,10 +589,11 @@ export async function runEvaluation(
       numDocs: corpus.length,
     },
     ci: {
-      hybridMrr: bootstrapCI(reciprocalRanks),
-      hybridR1: bootstrapCI(hitAt(1)),
-      hybridR5: bootstrapCI(hitAt(5)),
+      mrr: Object.fromEntries(strategies.map((s) => [s, bootstrapCI(rrByStrategy[s], BOOTSTRAP_SAMPLES)])) as Record<Strategy, Interval>,
+      r1: Object.fromEntries(strategies.map((s) => [s, bootstrapCI(perQueryHit(s, 1), BOOTSTRAP_SAMPLES)])) as Record<Strategy, Interval>,
+      r5: Object.fromEntries(strategies.map((s) => [s, bootstrapCI(perQueryHit(s, 5), BOOTSTRAP_SAMPLES)])) as Record<Strategy, Interval>,
     },
+    deltas,
     strategiesAll: Object.fromEntries(strategies.map((s) => [s, metricsFor(evals, s)])) as Record<
       Strategy,
       StrategyMetrics
@@ -601,13 +618,19 @@ export async function runEvaluation(
       exact: Object.fromEntries(strategies.map((s) => [s, kindMetric(exact, s)])) as Record<Strategy, KindMetrics>,
       paraphrase: Object.fromEntries(strategies.map((s) => [s, kindMetric(para, s)])) as Record<Strategy, KindMetrics>,
     },
+    byKindAll: {
+      exact: Object.fromEntries(strategies.map((s) => [s, kindMetric(exactAll, s)])) as Record<Strategy, KindMetrics>,
+      paraphrase: Object.fromEntries(strategies.map((s) => [s, kindMetric(paraAll, s)])) as Record<Strategy, KindMetrics>,
+    },
     sweep,
     regressions,
     gate: [],
     passed: true,
   };
 
-  // Quality gate, on the held-out split. Floors sit below current numbers to catch regressions,
+  // Quality gate. Every row is now scored on the HELD-OUT split: `byKind` used to be computed
+  // over tune+test, so four of these six rows included the 30 queries that chose the blend weight.
+  // Floors sit below current numbers to catch regressions,
   // not variance — so a pass means "has not regressed", never "meets an external bar".
   //
   // The gate used to assert "hybrid MRR ≥ best single strategy". That was removed, not relaxed:

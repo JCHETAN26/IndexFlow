@@ -643,3 +643,67 @@ in `lib/hybrid.ts` now records the full drift history so the next divergence is 
 
 **Gate: Phase 3 complete. Reported to the user.**
 
+---
+
+## 2026-08-05 — Phases 4 and 5
+
+Run together: both change `harness.ts`, and one CI run covers both. Ordering agreed with the user —
+Phase 4 and 5 are cheap and unblocked, then Phase 8 (corpus scale-up) ahead of Phases 6 and 7,
+since label validation and BEIR anchoring are both far more valuable against 500 documents than 17.
+
+### Phase 4 — the hypothesis being tested is the wrong one
+
+`bootstrapCI` produces **marginal** intervals, for hybrid only, and `RESULTS.md` reads their width
+as evidence that the semantic/hybrid gap is not a ranking:
+
+> "intervals this wide on a set this size mean small gaps are not rankings"
+
+**That inference is invalid.** Overlapping marginal intervals do not imply an insignificant
+difference. Both strategies are scored on the *same* queries, so the comparison is paired, and the
+paired test can resolve a difference that marginal intervals cannot — the per-query correlation is
+exactly the variance the paired difference removes.
+
+The direction of the error matters: the current framing is conservative, so the repo may be
+**understating** its most interesting result.
+
+### Phase 4 pre-registration
+
+Held-out MRR at production depth: keyword 0.75, semantic 0.97, hybrid 0.89, hybrid+rerank 0.93.
+Paired bootstrap over 33 judged queries, 2000 resamples, same deterministic seed.
+
+| pair | Δ MRR | prediction |
+|---|---|---|
+| semantic − keyword | +0.22 | excludes zero — **high confidence** |
+| semantic − hybrid | +0.08 | **excludes zero** — the load-bearing call |
+| hybrid+rerank − keyword | +0.18 | excludes zero |
+| hybrid − keyword | +0.14 | excludes zero |
+| semantic − hybrid+rerank | +0.04 | **does not** exclude zero |
+| hybrid+rerank − hybrid | +0.04 | genuinely uncertain; I lean "excludes zero", low confidence |
+
+**The load-bearing prediction: semantic − hybrid excludes zero.** If it does, then "blending a weak
+keyword leg into a strong semantic one measurably hurts retrieval" is a *statistically supported
+negative finding*, and the sentence in `RESULTS.md` calling it noise is wrong in the repo's own
+disfavour. If the interval includes zero, the current cautious framing was right and I say so.
+
+Secondary: marginal intervals for all four strategies will be **wide enough to overlap** between
+semantic and hybrid even where the paired interval excludes zero. That contrast is the entire point
+of the phase, and I expect to be able to show it in one table.
+
+### Phase 5 pre-registration
+
+`byKind` is computed from `evals` (tune + test), so four of six gate rows include the 30 queries
+that selected the blend weight. Pointing them at held-out rows only.
+
+The two splits differ sharply in character (Phase 3 finding: tuning favours keyword, held-out
+favours semantic), so removing the tuning queries should move keyword-flattering rows **down**.
+
+| gate row | floor | current (whole set) | predicted (held-out) |
+|---|---|---|---|
+| keyword R@1 on exact | 50% | 92% | drops to ~85–90%, passes |
+| semantic R@1 on paraphrase | 70% | 87% | ~85–90%, passes |
+| hybrid best on exact queries | 85% | 95% | **~87–93% — closest to its floor, the one at risk** |
+| hybrid does not collapse on paraphrase | 75% | 0.87 | ~0.85, passes |
+
+Prediction: **all six still pass**, with "hybrid best on exact queries" the narrowest margin. If any
+floor fails I will report it and not touch the floor.
+

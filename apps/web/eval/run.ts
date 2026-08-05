@@ -75,9 +75,24 @@ function print(r: EvalReport) {
     console.log(`${s.padEnd(15)} ${of(m.mrr, c.mrr)}   ${row}`);
   }
   console.log("─".repeat(80));
-  console.log("held-out hybrid, with 95% bootstrap intervals:");
-  console.log(`  MRR  ${iv(r.ci.hybridMrr)}     R@1  ${iv(r.ci.hybridR1)}     R@5  ${iv(r.ci.hybridR5)}`);
-  console.log("  (intervals this wide on a set this size mean small gaps are not rankings)");
+  console.log("95% MARGINAL bootstrap intervals (held-out):");
+  for (const s of strategies) {
+    console.log(
+      `  ${s.padEnd(15)} MRR ${iv(r.ci.mrr[s]).padEnd(18)} R@1 ${iv(r.ci.r1[s]).padEnd(18)} R@5 ${iv(r.ci.r5[s])}`,
+    );
+  }
+  console.log("");
+  console.log("95% PAIRED bootstrap intervals on the per-query MRR difference (held-out):");
+  console.log("  Marginal intervals above CANNOT settle 'is A better than B' — the strategies are");
+  console.log("  scored on the same queries, so the comparison is paired. Overlapping marginal");
+  console.log("  intervals do not imply an insignificant difference.");
+  for (const d of r.deltas) {
+    const sig = d.delta.excludesZero ? "SIGNIFICANT" : "not significant";
+    console.log(
+      `  Δ MRR ${(d.a + " − " + d.b).padEnd(31)} ${d.delta.value >= 0 ? "+" : ""}${f2(d.delta.value)} ` +
+        `[${f2(d.delta.lo)}, ${f2(d.delta.hi)}]   excludes zero: ${d.delta.excludesZero ? "yes" : "no "}   ${sig}`,
+    );
+  }
   console.log("─".repeat(80));
   const rj = r.rejection;
   console.log(
@@ -95,11 +110,19 @@ function print(r: EvalReport) {
   console.log(`  hybrid    not measurable — min-max normalisation puts every query's top at 1.000`);
   console.log(`  ${rj.caveat}`);
   console.log("─".repeat(80));
-  console.log("by query kind (R@1 / MRR), whole set:");
+  console.log("by query kind (R@1 / MRR), HELD-OUT — this is what the gate scores:");
   console.log("            keyword        semantic       hybrid         hybrid+rerank");
   for (const kind of ["exact", "paraphrase"] as const) {
     const cells = strategies
       .map((s) => `${pct(r.byKind[kind][s].r1)} / ${f2(r.byKind[kind][s].mrr)}`.padStart(15))
+      .join("");
+    console.log(`${kind.padEnd(12)}${cells}`);
+  }
+  console.log("");
+  console.log("same, whole set (tune+test) — for continuity with numbers published before 2026-08-05:");
+  for (const kind of ["exact", "paraphrase"] as const) {
+    const cells = strategies
+      .map((s) => `${pct(r.byKindAll[kind][s].r1)} / ${f2(r.byKindAll[kind][s].mrr)}`.padStart(15))
       .join("");
     console.log(`${kind.padEnd(12)}${cells}`);
   }

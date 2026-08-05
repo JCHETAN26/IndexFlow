@@ -29,6 +29,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  bootstrapCI,
+  bootstrapDelta,
   ceilingFor,
   dedupDocs,
   mrr,
@@ -225,6 +227,80 @@ describe("duplicate chunks", () => {
     const rows: Labeled[] = [{ relevant: ["a"] }];
     expect(recallAt(undeduped, rows, 3)).toBe(2); // recall above 1.0 — the failure mode
     expect(recallAt([[1]], rows, 3)).toBe(1);
+  });
+});
+
+// ── paired bootstrap ──────────────────────────────────────────────────────
+describe("bootstrapDelta", () => {
+  it("reports no difference between a strategy and itself", () => {
+    const a = [1, 0.5, 0.33, 0, 1, 0.25];
+    const d = bootstrapDelta(a, a);
+    expect(d.value).toBe(0);
+    expect(d.lo).toBe(0);
+    expect(d.hi).toBe(0);
+    expect(d.excludesZero).toBe(false);
+  });
+
+  it("recovers a constant offset exactly, with a zero-width interval", () => {
+    const b = [1, 0.5, 0.33, 0.25, 0, 1, 0.2];
+    const a = b.map((x) => x + 0.1);
+    const d = bootstrapDelta(a, b);
+    expect(d.value).toBeCloseTo(0.1, 12);
+    expect(d.lo).toBeCloseTo(0.1, 12);
+    expect(d.hi).toBeCloseTo(0.1, 12);
+    expect(d.excludesZero).toBe(true);
+  });
+
+  /**
+   * The property the whole phase rests on. Two strategies differ by a small constant on every
+   * query, but each strategy's own scores vary widely. The marginal intervals are then wide and
+   * overlap heavily; the paired interval is tight and excludes zero. Reading the overlap of
+   * marginal intervals as "no significant difference" gets this case exactly backwards.
+   */
+  it("resolves a difference that overlapping marginal intervals hide", () => {
+    const b = [1, 0.5, 0.2, 1, 0.33, 0.25, 1, 0.14, 0.5, 1, 0.2, 0.33];
+    const a = b.map((x) => Math.min(1, x + 0.06));
+
+    const marginalA = bootstrapCI(a);
+    const marginalB = bootstrapCI(b);
+    // Marginal intervals overlap: A's lower bound sits below B's upper bound.
+    expect(marginalA.lo).toBeLessThan(marginalB.hi);
+
+    const paired = bootstrapDelta(a, b);
+    expect(paired.value).toBeGreaterThan(0);
+    expect(paired.excludesZero).toBe(true);
+  });
+
+  it("is antisymmetric: swapping the arguments negates the interval", () => {
+    const a = [1, 0.5, 0.2, 0.33, 1, 0.25];
+    const b = [0.5, 0.33, 1, 0.2, 0.25, 1];
+    const ab = bootstrapDelta(a, b);
+    const ba = bootstrapDelta(b, a);
+    expect(ab.value).toBeCloseTo(-ba.value, 12);
+    expect(ab.excludesZero).toBe(ba.excludesZero);
+  });
+
+  it("is deterministic across runs, so a published interval does not jitter", () => {
+    const a = [1, 0.5, 0.2, 0.33, 1, 0.25, 0.14];
+    const b = [0.5, 0.33, 1, 0.2, 0.25, 1, 0.5];
+    expect(bootstrapDelta(a, b)).toEqual(bootstrapDelta(a, b));
+  });
+
+  it("refuses unpaired vectors instead of silently comparing the wrong queries", () => {
+    expect(() => bootstrapDelta([1, 0.5], [1])).toThrow(/paired/);
+  });
+
+  it("returns zeros for empty input", () => {
+    const d = bootstrapDelta([], []);
+    expect([d.value, d.lo, d.hi]).toEqual([0, 0, 0]);
+    expect(d.excludesZero).toBe(false);
+  });
+
+  it("does not call a genuinely noisy difference significant", () => {
+    // Alternating wins and losses of equal size: the mean difference is 0.
+    const a = [1, 0.25, 1, 0.25, 1, 0.25, 1, 0.25];
+    const b = [0.25, 1, 0.25, 1, 0.25, 1, 0.25, 1];
+    expect(bootstrapDelta(a, b).excludesZero).toBe(false);
   });
 });
 
