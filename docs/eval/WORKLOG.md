@@ -550,3 +550,96 @@ re-embedding per cell, and avoids the reranker entirely, which the depth questio
 Matrix runs on the **tuning split only**. The depth configuration is chosen there, then held-out
 numbers are produced **once**.
 
+### Result — the matrix
+
+Run: [CI 30963724884](https://github.com/JCHETAN26/IndexFlow/actions/runs/30963724884), `eval` job.
+Tuning split, 30 queries (17 exact / 13 paraphrase).
+
+```
+cell                        effective   weight   MRR     exact   para    R@1    R@5    nDCG@5
+10 / 10                     10/10       0.55     0.98    1.00    0.96     95%   100%    99%
+50 / 50                     17/17       0.45     0.98    1.00    0.96     95%   100%    99%
+100 / 100                   17/17       0.45     0.98    1.00    0.96     95%   100%    99%
+all / 10 (legacy)           17/10       0.55     0.98    1.00    0.96     95%   100%    99%
+30 / 30 (production)        17/17       0.45     0.98    1.00    0.96     95%   100%    99%
+```
+
+**Every cell is identical on every metric.** Only the selected weight moves (0.55 → 0.45). As
+predicted, 50/50, 100/100 and 30/30 all collapse to 17/17.
+
+The reason no cell differs is not that depth is harmless — it is that **the tuning split is itself
+saturated**: MRR 0.98, exact 1.00, R@5 100%. There is no headroom in which a depth effect could
+become visible. This experiment cannot answer the question it was designed to answer, and the
+corpus is why.
+
+### Result — the mechanism is real, the effect is not
+
+The normalisation diagnostic isolates the compression mechanism directly, reporting the mean
+normalised score of each leg's *second*-ranked hit:
+
+```
+depth 10 / 10    keyword 0.401   semantic 0.565
+depth 17 / 17    keyword 0.405   semantic 0.659
+```
+
+**Semantic's runner-up rises from 0.565 to 0.659 as depth grows** — the predicted compression
+toward 1.0, measured. A deeper semantic leg genuinely does vote less decisively among its own best
+hits. Keyword barely moves (0.401 → 0.405) because most queries match fewer than 10 chunks, so
+truncating at 10 rarely binds.
+
+So the mechanism I pre-registered is confirmed to exist, and confirmed **not** to matter at this
+corpus size. Both halves are findings.
+
+### Result — held-out, scored once at production depth
+
+Depth chosen on the grounds that the tuning split could not discriminate: **mirror production**.
+Measuring a configuration that has never shipped is indefensible regardless of how it scores.
+
+| metric | legacy 17/10, w=0.55 | production 17/17, w=0.45 | Δ |
+|---|---|---|---|
+| hybrid MRR | 0.88 | **0.89** | +0.01 |
+| hybrid R@1 | 73% | **76%** | +3pp |
+| hybrid paraphrase MRR | 0.85 | **0.87** | +0.02 |
+| hybrid R@5 | 100% | 100% | — |
+| semantic MRR | 0.97 | 0.97 | — |
+| keyword MRR | 0.75 | 0.75 | — |
+| hybrid+rerank MRR | 0.93 | 0.93 | — |
+
+Quality gate: all six rows pass.
+
+### Predictions, scored honestly
+
+| # | Prediction | Outcome |
+|---|---|---|
+| 1 | Equal depth moves hybrid <0.05 and it stays below semantic | **Confirmed.** +0.01; 0.89 vs semantic 0.97 |
+| 2 | Paraphrase moves <0.03 | **Confirmed.** +0.02 (0.85 → 0.87) |
+| 3 | Truncating keyword to 10 slightly improves hybrid | **Wrong — and unmeasurable.** 10/10 scored identically to 17/10 on a saturated tuning split. I predicted a direction for an effect the instrument could not resolve |
+| 4 | Weight shifts below 0.55 at equal depth | **Confirmed.** 0.55 → 0.45 |
+| 5 | Rejection separation unaffected | **Confirmed.** Identical (0.094 vs answerable min 0.196) |
+
+**The brief's two outcomes, resolved: the second one.** Hybrid did not improve materially at equal
+depth, so a fourth alternative explanation for the "blending hurts" finding is ruled out and the
+original conclusion is *stronger*, not weaker. It now rests on a harness that measures the shipped
+configuration. Recording the caveat that makes this weaker than it sounds: the tuning split could
+not have shown the opposite, so this rules out the confound only to the extent the held-out split
+has resolution, and at R@5 it has none.
+
+### Two things found along the way
+
+**The two splits disagree about which strategy is better.** On the tuning split, keyword MRR
+**0.96** beats semantic **0.92**. On the held-out split, semantic **0.97** beats keyword **0.75** —
+a complete reversal. This follows from composition: tuning is 17 exact / 13 paraphrase, held-out is
+15 exact / 19 paraphrase, and the kinds favour opposite legs. The balanced-MRR selection criterion
+was introduced to stop pooled MRR letting the larger kind pick the weight, and it is doing its job,
+but **the blend weight is still being selected on a split whose character is the inverse of the one
+it is scored on.** That is a live threat to the weight's validity and is not currently disclosed
+anywhere. Filed for Phase 6/8 — the fix is stratified splits, not a criterion change.
+
+**`DEFAULT_HYBRID_WEIGHT` fixed.** It read 0.4 while the sweep selected 0.55, so production served
+a blend no published number described — found in the review that preceded this work. Now set to
+**0.45**, the weight selected on the tuning split at production depth. The plateau is wide and flat
+(0.20–0.70 all at 0.98), so this is a plateau centre rather than a sharp optimum, and the comment
+in `lib/hybrid.ts` now records the full drift history so the next divergence is visible.
+
+**Gate: Phase 3 complete. Reported to the user.**
+
