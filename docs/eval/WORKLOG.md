@@ -889,3 +889,118 @@ retained if the larger corpus contradicts it.
 one relevant document, so R@1's ceiling is ~0.96), and P@3's ceiling will remain low (~0.38) for
 the same label-density reason as the in-domain set.
 
+### A latent production bug, found by trying to scale
+
+First attempt died at 60 seconds with `SIGTERM` from the runner. Cause: `lib/embed.ts` passed
+**every** text to the extractor in one call, and transformers.js pads a batch to its longest
+sequence and allocates a single tensor for it — 11,562 chunks × ~256 tokens × 384 floats ≈ **4.5 GB**.
+The OS killed it.
+
+This was **not only an eval bug**. The ingestion worker calls `embed()` with every chunk of an
+uploaded document, so a large enough upload would have hit the same wall in production. Fixed by
+batching at 64 inside `embed()`, where the memory characteristics are actually known, rather than
+at each call site. Recorded here because it is the kind of defect that only a scale-up finds, and
+it was invisible on a 17-chunk corpus.
+
+### Result — SciFact, 5,183 documents, 300 held-out queries
+
+Run: [CI 30978548207](https://github.com/JCHETAN26/IndexFlow/actions/runs/30978548207), 815 s wall
+(751 s of it embedding). Dataset `beir-scifact-2021`, docs `e677ae667a9b`, queries `4cd6f5fef66d`.
+
+```
+Strategy         MRR    R@1     R@5     R@10    P@3     nDCG@10
+keyword        0.62    50.8%   71.3%   76.2%   23.7%   64.6%
+semantic       0.61    49.4%   71.4%   79.8%   23.0%   64.8%
+hybrid         0.68    56.4%   77.7%   83.1%   25.2%   70.7%
+ceiling        1.00    95.5%  100.0%  100.0%   36.9%  100.0%
+
+95% paired bootstrap on per-query MRR difference:
+  Δ keyword − semantic    +0.015 [-0.024, 0.052]   excludes zero: no    not significant
+  Δ hybrid  − keyword     +0.056 [ 0.033, 0.081]   excludes zero: yes   SIGNIFICANT
+  Δ hybrid  − semantic    +0.071 [ 0.043, 0.099]   excludes zero: yes   SIGNIFICANT
+```
+
+### THE HEADLINE: "blending hurts" does not generalise, and reverses
+
+**On SciFact, hybrid significantly beats both single strategies** — +0.056 over keyword and +0.071
+over semantic, both intervals excluding zero at n=300, a sample ten times larger than the in-domain
+held-out split. This is the direct opposite of the in-domain finding, where semantic beat hybrid by
++0.08 with the interval excluding zero.
+
+Both results are correct. They are not in conflict once the mechanism is stated:
+
+| | in-domain (17 docs) | SciFact (5,183 docs) |
+|---|---|---|
+| keyword MRR | 0.75 | 0.62 |
+| semantic MRR | 0.97 | 0.61 |
+| legs comparable? | **no — semantic dominates by 0.22** | **yes — 0.015 apart, not significant** |
+| hybrid vs best leg | **−0.08, significantly worse** | **+0.056, significantly better** |
+
+**Blending helps when the two legs are comparably strong and complementary, and hurts when one leg
+is much weaker than the other.** On the in-domain corpus a weak keyword leg is being averaged into
+a near-perfect semantic leg, and that can only drag it down. On SciFact the legs are statistically
+tied and evidently disagree in useful ways, so the blend captures what each misses.
+
+This is a better finding than either component. It also means **the existing `RESULTS.md` claim is
+over-generalised**: "hybrid does not beat both single strategies" is true of that corpus, not of
+this system. I pre-registered this as the prediction most likely to overturn an existing
+conclusion, precisely so it could not be quietly retained. It was overturned.
+
+### External anchor — I was wrong, in the system's favour
+
+| metric | ours | published | delta |
+|---|---|---|---|
+| BM25 nDCG@10 | **0.646** | ≈0.665 (BEIR, Thakur et al. 2021) | **−0.019** |
+| all-MiniLM-L6-v2 nDCG@10 | **0.648** | ≈0.645 (sentence-transformers) | **+0.003** |
+
+**Prediction 2 was wrong.** I predicted our BM25 would land 0.50–0.62 and underperform by up to
+0.15, reasoning from three real differences: chunking abstracts into 2.23 pieces and scoring at
+document level after dedup, Elasticsearch's default BM25 parameters rather than BEIR's tuned
+k1=0.9/b=0.4, and a `multi_match` with `title^2` rather than plain BM25 over concatenated fields.
+Those differences are real; together they cost about **two nDCG points, not fifteen**.
+
+This is the strongest validity result in the project so far. **The whole pipeline — chunking,
+Elasticsearch indexing and analysis, embedding, scoring, metric computation, document-level
+deduplication — reproduces published literature numbers on a public corpus.** The dense-retrieval
+leg matches its published figure to within 0.003. Whatever else is uncertain here, the machinery
+is not silently broken.
+
+### Predictions scored
+
+| # | Prediction | Outcome |
+|---|---|---|
+| 1 | Metrics drop sharply; semantic MRR 0.55–0.70, R@5 well under 90% | **Confirmed.** 0.61 and 71.4% |
+| 2 | Our BM25 lands 0.50–0.62, under published 0.665 | **Wrong.** 0.646 — a 0.02 gap, not 0.15 |
+| 3 | Semantic beats keyword significantly | **Wrong.** Keyword +0.015, not significant — they are tied |
+| 4 | Hybrid may beat both | **Confirmed, and it is the headline.** Both deltas significant |
+| 5 | R@1 ceiling ≈0.96, P@3 ceiling ≈0.38 | **Confirmed.** 95.5% and 36.9% |
+
+Three of five. The two misses are both about the *relative strength of the keyword leg*, which I
+systematically underestimated — I expected Elasticsearch BM25 to be a weak baseline and it is not.
+That single error explains both wrong predictions, and it is worth recording as a bias rather than
+two separate mistakes.
+
+### Saturation: gone
+
+Every metric now has real headroom. R@5 is 71–78% against a 100% ceiling, R@10 is 76–83%, nDCG@10
+is 65–71%. The benchmark can once again distinguish configurations — the weight sweep has a genuine
+peak (0.61 at w=0.00, rising to 0.68 at 0.50, falling to 0.62 at 1.00) instead of the flat
+0.20–0.70 plateau the in-domain corpus produced.
+
+The SciFact sweep selects **0.50**; the production constant stays **0.45**, chosen on the in-domain
+tuning split. That is deliberate: IndexFlow's domain is workspace documents, not scientific claim
+verification, and the product constant should follow the in-domain corpus. Recorded so the
+difference is not mistaken for drift.
+
+### Still outstanding in this phase
+
+- **NFCorpus has not been run.** Graded-gain support (`ndcgAtGraded`) is implemented and unit-tested
+  against the binary implementation, but the archive is not yet SHA-pinned and no run exists. Until
+  then, the "graded relevance makes nDCG informative" argument is a design claim, not a result.
+- **SciFact is binary**, so nDCG@10 above still carries no information MRR does not. It is
+  reported because it is the metric the published baselines use, which is its own justification.
+- **No reranker at scale.** The scale runner omits it deliberately (≈11k cross-encoder pairs would
+  dominate the run). So hybrid+rerank is unmeasured on SciFact.
+
+**Gate: Phase 8 SciFact leg complete. Reported to the user.**
+
