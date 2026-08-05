@@ -14,6 +14,7 @@
     "eval": "tsx --env-file=.env eval/run.ts",
     "eval:rag": "tsx --env-file=.env eval/rag-run.ts",
     "eval:depth": "tsx --env-file=.env eval/depth-matrix.ts",
+    "eval:scale": "tsx --env-file=.env eval/scale-run.ts",
     "eval:trec-export": "tsx eval/trec-export.ts",
     "eval:crosscheck": "tsx eval/trec-export.ts && python3 eval/crosscheck.py .evalrun/trec",
     "eval:adversarial": "tsx --env-file=.env eval/adversarial-run.ts",

@@ -35,8 +35,10 @@ import {
   dedupDocs,
   mrr,
   ndcgAt,
+  ndcgAtGraded,
   precisionAt,
   ranksForQuery,
+  ranksFromRanked,
   recallAt,
   type Labeled,
 } from "@/eval/metrics";
@@ -227,6 +229,69 @@ describe("duplicate chunks", () => {
     const rows: Labeled[] = [{ relevant: ["a"] }];
     expect(recallAt(undeduped, rows, 3)).toBe(2); // recall above 1.0 — the failure mode
     expect(recallAt([[1]], rows, 3)).toBe(1);
+  });
+});
+
+// ── graded nDCG ───────────────────────────────────────────────────────────
+describe("ndcgAtGraded", () => {
+  const g = (pairs: [string, number][]) => ({ relevant: new Map(pairs) });
+
+  it("scores a perfect graded ranking at 1.0", () => {
+    const rows = [g([["a", 2], ["b", 1]])];
+    expect(ndcgAtGraded([["a", "b", "c"]], rows, 3)).toBeCloseTo(1, 12);
+  });
+
+  it("penalises putting the lower grade first", () => {
+    const rows = [g([["a", 2], ["b", 1]])];
+    // DCG = 1/log2(2) + 2/log2(3); IDCG = 2/log2(2) + 1/log2(3)
+    const dcg = 1 / Math.log2(2) + 2 / Math.log2(3);
+    const idcg = 2 / Math.log2(2) + 1 / Math.log2(3);
+    expect(ndcgAtGraded([["b", "a", "c"]], rows, 3)).toBeCloseTo(dcg / idcg, 12);
+    expect(ndcgAtGraded([["b", "a", "c"]], rows, 3)).toBeLessThan(1);
+  });
+
+  /**
+   * The convention check that matters: on binary judgments the graded implementation must agree
+   * with the binary one exactly, or BEIR numbers and in-domain numbers are not comparable and the
+   * pytrec_eval cross-check in Phase 1 does not transfer.
+   */
+  it("agrees with the binary implementation when every gain is 1", () => {
+    const ranked = [
+      ["d2", "d1", "d3", "d4", "d5"],
+      ["d9", "d8", "d7", "d1", "d2"],
+      ["d1", "d5", "d3", "d2", "d4"],
+    ];
+    const relevantSets = [["d1"], ["d1", "d2"], ["d3", "d4", "d5"]];
+    const graded = relevantSets.map((s) => g(s.map((d) => [d, 1] as [string, number])));
+    const binaryRows = relevantSets.map((s) => ({ relevant: s }));
+    const rankings = ranked.map((r, i) => ranksFromRanked(r, graded[i].relevant));
+    for (const k of [1, 3, 5]) {
+      expect(ndcgAtGraded(ranked, graded, k)).toBeCloseTo(ndcgAt(rankings, binaryRows, k), 12);
+    }
+  });
+
+  it("does not penalise a query with more relevant documents than the cut-off", () => {
+    // Five relevant documents, k=3: the ideal ranking can only show three, so a ranking that
+    // shows the best three must score 1.0.
+    const rows = [g([["a", 1], ["b", 1], ["c", 1], ["d", 1], ["e", 1]])];
+    expect(ndcgAtGraded([["a", "b", "c", "x", "y"]], rows, 3)).toBeCloseTo(1, 12);
+  });
+
+  it("scores zero when nothing relevant appears inside the cut-off", () => {
+    const rows = [g([["a", 2]])];
+    expect(ndcgAtGraded([["x", "y", "z", "a"]], rows, 3)).toBe(0);
+  });
+
+  it("excludes unjudged queries from the denominator, as the binary metrics do", () => {
+    const rows = [g([["a", 1]]), g([])];
+    // Only the judged query counts; a perfect ranking on it scores 1.0, not 0.5.
+    expect(ndcgAtGraded([["a"], ["x"]], rows, 3)).toBeCloseTo(1, 12);
+  });
+
+  it("returns 0 rather than NaN with no judged queries", () => {
+    const v = ndcgAtGraded([["x"]], [{ relevant: new Map() }], 3);
+    expect(Number.isNaN(v)).toBe(false);
+    expect(v).toBe(0);
   });
 });
 

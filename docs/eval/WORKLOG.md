@@ -790,3 +790,102 @@ rather than changed — renaming or re-specifying a gate is a decision for the u
 
 **Gate: Phases 4 and 5 complete, all six floors pass. Reported to the user.**
 
+---
+
+## 2026-08-05 — Phase 8: corpus scale-up
+
+User confirmed: proceed with Phase 8. Phase 7 stays deferred, though the corpus choice below
+delivers most of it as a by-product.
+
+### Corpus choice
+
+The brief prefers "a public corpus with existing relevance judgements" over synthesised queries.
+Taking that, and taking **both** of Phase 7's named datasets, because they fail in opposite
+directions and the pair covers what neither does alone. Measured from the actual downloads, not
+from documentation:
+
+| | SciFact | NFCorpus |
+|---|---|---|
+| documents | **5,183** | 3,633 |
+| test queries | **300** | 323 |
+| train queries | 809 | — |
+| judgments (test) | 339 | **12,334** |
+| relevant per query | 1.13 (277 have exactly 1) | **~38** |
+| relevance | binary (all 1) | **graded (1 and 2)** |
+| mean doc length | 214 words | — |
+| estimated chunks @ stride 150 | **8,778** | — |
+
+Both clear the brief's bar (≥500 docs, ≥150 queries) on their own. Why both:
+
+- **SciFact matches IndexFlow's task shape.** Sparse labels, usually one correct document — the
+  same "find the right doc" problem the in-domain set poses, at 305× the corpus size.
+- **NFCorpus fixes what SciFact does not.** Graded relevance and ~38 relevant documents per query
+  make nDCG carry information that MRR does not, which is exactly the gap flagged in the original
+  review (§3.5: "no NDCG, and the current label design cannot support it"). It also makes P@k
+  meaningful, since its ceiling is no longer ~1/k, and makes R@5 saturation impossible.
+
+**Domain caveat, recorded up front.** IndexFlow is permission-aware *workspace* search over
+internal technical documents. SciFact is scientific claim verification and NFCorpus is nutrition
+literature. Neither is in-domain. They measure whether the retrieval stack is competitive against
+public baselines — real and currently unproven — not whether it is good at the product's actual
+task. The existing 64-query in-domain set is therefore **preserved as the regression suite** and
+remains what the CI gate scores, exactly as the brief requires.
+
+**A limitation Phase 8 does not remove:** SciFact's relevance is binary, so on SciFact alone nDCG
+still carries no information beyond MRR. Only NFCorpus fixes that, and only once the metric code
+supports graded gain — currently `relevant: string[]` is a set, with no gain values. That is real
+work, and until it lands NFCorpus numbers would be wrong rather than merely limited.
+
+### Plan, and why it is staged
+
+1. Dataset abstraction + BEIR loader, downloaded in CI with a pinned SHA256.
+2. Scale run on **SciFact** (binary — works with today's metric code).
+3. Graded-gain support, then **NFCorpus**.
+
+Staged because step 2 is the feasibility question and step 3 is a metric-semantics change; running
+them together would confound a scaling result with a scoring change.
+
+The in-domain harness is left untouched. It keeps the gate honest while this is built, and the
+brief requires preserving it anyway.
+
+### Engineering risks identified before writing code
+
+- **Seeding.** The harness inserts one row per `$executeRaw` inside a transaction with a 60 s
+  timeout. At 5,183 documents + ~8,778 chunks that is ~14k round trips and will time out. Needs
+  batched multi-row inserts and a much larger timeout.
+- **Reranking.** The harness reranks the top 10 for *every* query. At 1,109 queries that is ~11k
+  cross-encoder pairs on a CI CPU — plausibly 10–35 minutes, dominating the run. Reranking will be
+  opt-in at scale, and its absence stated rather than quietly skipped.
+- **Exact KNN.** Index scans are disabled so semantic ranking is brute force. Over ~8,778 chunks
+  that is ~3.4M float ops per query; the cost is row-scan overhead, estimated tens of milliseconds
+  per query, so ~1,109 queries should be seconds to a minute. Expected to be fine — recorded so
+  that if it is not, the estimate is on the record as wrong.
+
+### Pre-registration
+
+**Prediction 1 — the point of the whole phase.** Metrics will drop sharply. On the 17-document
+corpus semantic scores MRR 0.97 with R@5 at 100% of ceiling. On SciFact I predict semantic
+**MRR 0.55–0.70** and **R@5 well below 90%**, i.e. no longer at ceiling. A drop is success here; a
+number that stays near 0.95 would mean the harness is not really searching 5,183 documents.
+
+**Prediction 2 — external anchor.** Published BM25 on SciFact is widely cited at **nDCG@10 ≈
+0.665** (Thakur et al. 2021, BEIR). I predict **our BM25 underperforms it, landing 0.50–0.62**, for
+three specific reasons: we chunk abstracts into ~1.7 pieces and score at document level after
+dedup; we use Elasticsearch's default BM25 parameters rather than BEIR's tuned k1=0.9/b=0.4; and
+our query is a `multi_match` with a `title^2` boost, not standard BM25 over concatenated
+title+text. If the gap is larger than ~0.15 I will treat it as a defect to investigate, not a
+configuration difference to explain away.
+
+**Prediction 3.** Semantic will beat keyword on SciFact, consistent with the in-domain finding, and
+the paired bootstrap will show it excluding zero given n=300 — a far larger sample than 33.
+
+**Prediction 4.** Hybrid will land between the two and, unlike on the in-domain corpus, may
+genuinely beat both: the in-domain result was driven by a weak keyword leg, and BM25 is much
+stronger on SciFact. **This is the prediction most likely to overturn an existing conclusion**, and
+I am explicitly stating it before seeing any number, so that "blending hurts" cannot be quietly
+retained if the larger corpus contradicts it.
+
+**Prediction 5.** Ceilings will be near 1.0 for MRR/R@k on SciFact (277 of 300 queries have exactly
+one relevant document, so R@1's ceiling is ~0.96), and P@3's ceiling will remain low (~0.38) for
+the same label-density reason as the in-domain set.
+

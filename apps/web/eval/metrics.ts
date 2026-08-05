@@ -164,6 +164,57 @@ export function ceilingFor(
 export const fractionOfCeiling = (value: number, ceiling: number): number =>
   ceiling === 0 ? 0 : value / ceiling;
 
+// ── graded relevance ──────────────────────────────────────────────────────
+/**
+ * A query whose judgments carry a gain, not just membership.
+ *
+ * The binary functions above take `rankings: number[][]` — the *positions* of relevant documents —
+ * which is sufficient for MRR, recall and precision but throws away which document sits at each
+ * position. Graded nDCG needs the gain at each rank, so it takes the ranked document ids instead.
+ */
+export interface GradedLabeled {
+  relevant: Map<string, number>;
+}
+
+/** Positions (1-based) of relevant documents, so the binary metrics can score a ranked id list. */
+export const ranksFromRanked = (ranked: string[], relevant: Map<string, number>): number[] => {
+  const out: number[] = [];
+  for (let i = 0; i < ranked.length; i++) if (relevant.has(ranked[i])) out.push(i + 1);
+  return out;
+};
+
+/**
+ * Mean nDCG@k with **linear** gain — `trec_eval`'s `ndcg_cut` convention, so numbers stay
+ * comparable to published BEIR baselines. Gain is the judgment value itself (1, or 2 for
+ * NFCorpus's higher grade), not 2^rel − 1.
+ *
+ * The ideal ranking is the query's own gains sorted descending and truncated at k, so a query with
+ * more relevant documents than k is not penalised for being unable to show them all.
+ */
+export function ndcgAtGraded(ranked: string[][], rows: GradedLabeled[], k: number): number {
+  const n = rows.reduce((c, r) => c + (r.relevant.size > 0 ? 1 : 0), 0);
+  if (n === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const rel = rows[i].relevant;
+    if (rel.size === 0) continue;
+
+    let dcg = 0;
+    const list = ranked[i] ?? [];
+    for (let p = 0; p < Math.min(k, list.length); p++) {
+      const gain = rel.get(list[p]) ?? 0;
+      if (gain > 0) dcg += gain / Math.log2(p + 2);
+    }
+
+    const ideal = [...rel.values()].sort((a, b) => b - a).slice(0, k);
+    let idcg = 0;
+    for (let p = 0; p < ideal.length; p++) idcg += ideal[p] / Math.log2(p + 2);
+
+    if (idcg > 0) sum += dcg / idcg;
+  }
+  return sum / n;
+}
+
 /** Deterministic mulberry32. Fixed seed so a published interval does not jitter between runs. */
 export function seededRandom(seed = 0x9e3779b9): () => number {
   let s = seed;
