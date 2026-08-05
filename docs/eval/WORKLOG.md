@@ -1064,3 +1064,110 @@ documents per query, a 30-candidate pool cannot contain them all. I predict the 
 depth 30 is **well below 0.5**, and that R@100 is much larger than R@10 — meaning depth, not
 ranking, is what limits recall on this dataset.
 
+### Result — NFCorpus, 3,633 documents, 323 held-out queries
+
+Run: [CI 30982743336](https://github.com/JCHETAN26/IndexFlow/actions/runs/30982743336), 623 s wall.
+Dataset `beir-nfcorpus-2021`, docs `c447d420f487`, queries `fed3af99af14`.
+
+```
+Strategy         MRR    R@1     R@6*    R@10    P@3     nDCG@10
+keyword        0.50     5.7%   12.7%   14.8%   32.7%   29.9%
+semantic       0.51     4.2%   12.3%   14.8%   34.2%   30.8%
+hybrid         0.53     5.1%   14.4%   16.4%   38.1%   33.2%
+ceiling        1.00    17.9%   50.2%   61.5%   92.9%  100.0%
+   * R@6 = the k that reaches the generator
+
+depth diagnostics — is CANDIDATE_LIMIT=30 the binding constraint?
+  keyword    R@10 14.8%   R@30 18.0%   R@100 22.8%
+  semantic   R@10 14.8%   R@30 19.8%   R@100 28.0%
+  hybrid     R@10 16.4%   R@30 22.8%   R@100 31.2%
+  candidate pool ceiling: 24.3% at depth 30, 32.6% at depth 100
+
+graded vs binary nDCG@10:
+  keyword   graded 29.9%  binary 29.9%  delta +0.03pp
+  semantic  graded 30.8%  binary 31.1%  delta −0.30pp
+  hybrid    graded 33.2%  binary 33.3%  delta −0.07pp
+
+paired bootstrap:
+  Δ semantic − keyword   +0.008 [-0.031, 0.046]   not significant
+  Δ hybrid − keyword     +0.032 [ 0.002, 0.062]   SIGNIFICANT
+  Δ hybrid − semantic    +0.023 [ 0.004, 0.044]   SIGNIFICANT
+```
+
+### THE HEADLINE: depth is the constraint, not ranking
+
+**Hybrid's R@30 is 22.8% against a candidate pool ceiling of 24.3% at the same depth.** It is
+capturing **94% of everything reachable**. Ranking on this dataset is very nearly optimal; what
+limits recall is that the relevant documents are never candidates in the first place.
+
+This has a direct engineering consequence, and it is the opposite of the intuitive one: **a
+reranker cannot help here.** Its maximum possible contribution at depth 30 is 1.5 percentage
+points, because no reranker can promote a document that was never retrieved. To improve recall on a
+densely-labelled corpus the lever is `CANDIDATE_LIMIT`, not a better ranker. Raising depth 30 → 100
+moves the pool ceiling 24.3% → 32.6% and hybrid recall 22.8% → 31.2%.
+
+This is the question the user raised — whether the metrics are weak — answered with a measurement
+rather than an opinion. The metric that was missing is the one that turned out to matter most.
+
+### The mechanism hypothesis replicates
+
+SciFact produced the claim that blending helps when the legs are comparably strong and hurts when
+one dominates. NFCorpus was a genuine test of it, pre-registered, and it holds:
+
+| corpus | keyword vs semantic | hybrid vs both |
+|---|---|---|
+| in-domain (17 docs) | semantic +0.22, dominant | **−0.08, significantly worse** |
+| SciFact (5,183 docs) | +0.015, **not significant** | **+0.056 / +0.071, significant** |
+| NFCorpus (3,633 docs) | +0.008, **not significant** | **+0.032 / +0.023, significant** |
+
+Three corpora, two independent confirmations. The rule now has real support: **hybrid is worth
+running when neither leg dominates, and is actively harmful when one does.** That is a more useful
+statement than anything in the current `RESULTS.md`, and it is falsifiable.
+
+The NFCorpus sweep also independently selected **0.45**, the production constant.
+
+### Predictions scored: 4 of 6
+
+| # | Prediction | Outcome |
+|---|---|---|
+| 1 | MRR ≥ 0.5 everywhere and uninformative | **Confirmed.** 0.50/0.51/0.53, CIs heavily overlapping, while nDCG@10 separates them cleanly |
+| 2 | R@5 ceiling collapses to ≈0.15 | **Wrong.** R@6 ceiling is 50.2% |
+| 3 | Our BM25 lands 0.29–0.34 | **Confirmed.** 0.299 against a published ≈0.325 |
+| 4 | Legs comparable → hybrid beats both significantly | **Confirmed.** The mechanism survives an independent test |
+| 5 | Graded within ±0.03 of binary | **Confirmed**, ten times tighter than predicted |
+| 6 | Pool ceiling well under 0.5; R@100 ≫ R@10 | **Confirmed.** 24.3%, and R@100 roughly doubles R@10 |
+
+**Why prediction 2 was wrong, recorded because the error is instructive.** I computed the ceiling
+from the *mean* of ~38 relevant documents per query: `min(6,38)/38 ≈ 0.16`. But the distribution is
+heavily right-skewed — the R@1 ceiling of 17.9% implies a typical query has around 5 relevant
+documents, not 38. Reasoning from a mean over a skewed distribution gave an answer off by a factor
+of three. The `ceilingFor` machinery computed it correctly from the actual labels, which is exactly
+the argument for computing ceilings rather than estimating them.
+
+### A finding that undercuts my own reasoning for choosing NFCorpus
+
+I selected NFCorpus partly because **graded** relevance would make nDCG carry information binary
+labels cannot. **Measured, the grades are worth essentially nothing: ±0.3 percentage points, and
+for two of three strategies the graded score is fractionally *lower*.** Grade-2 judgments are only
+4.7% of the total, too sparse to move a ranking.
+
+So the original review's §3.5 remedy — "add graded relevance and NDCG becomes meaningful" — is, on
+this evidence, **not the mechanism that makes nDCG useful.** What made nDCG useful here was
+**label density**, not grading. With ~38 relevant documents per query, nDCG@10 separates the three
+strategies by 3.3 points while MRR separates them by 0.03 and cannot distinguish them at all. Many
+relevant documents per query is the property that matters; graded relevance on top of it is close
+to a rounding error.
+
+The graded code path is still correct and still worth having — it is unit-tested to agree with the
+binary implementation to 12 decimal places, and a corpus with denser high grades would exercise it.
+But it should not be sold as the thing that fixed nDCG.
+
+### Also worth noting
+
+Raw R@6 of 12–14% looks catastrophic and is not: the ceiling is 50.2%, so hybrid reaches 29% of
+attainable. Conversely P@3 of 38.1% looks poor and is genuinely poor — its ceiling here is **92.9%**,
+because with dozens of relevant documents almost any three could be right. The same two numbers
+would be read backwards without the ceiling row, in opposite directions.
+
+**Gate: Phase 8 complete — both BEIR subsets run. Reported to the user.**
+
