@@ -38,7 +38,8 @@
     "judge:export": "tsx --env-file=.env eval/export-labels.ts",
     "judge:calibrate": "tsx --env-file=.env eval/calibrate-judges.ts",
     "eval:embed-shard": "tsx --env-file=.env eval/embed-shard.ts",
-    "eval:scale-curve": "tsx --env-file=.env eval/scale-curve.ts"
+    "eval:scale-curve": "tsx --env-file=.env eval/scale-curve.ts",
+    "bench:ingest": "tsx --env-file=.env bench/ingest-bench.ts"
   },
   "prisma": {
     "schema": "prisma/schema.prisma"

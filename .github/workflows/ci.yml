@@ -388,6 +388,102 @@ jobs:
       - name: Scale curve
         run: pnpm --filter @indexflow/web eval:scale-curve
 
+  # Phase 9c: end-to-end ingestion through the real BullMQ worker. Needs the full stack — Redis
+  # for the queue and MinIO for the original bytes — because the point is that the published
+  # "index throughput" number measures bulk loading, which no upload ever uses.
+  ingest-bench:
+    name: ingestion throughput
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: indexflow
+          POSTGRES_PASSWORD: indexflow
+          POSTGRES_DB: indexflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U indexflow -d indexflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+          ingest.geoip.downloader.enabled: "false"
+        ports:
+          - 9200:9200
+      redis:
+        image: redis:7
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
+      ES_URL: http://localhost:9200
+      REDIS_URL: redis://localhost:6380
+      MINIO_ENDPOINT: http://localhost:9100
+      MINIO_ACCESS_KEY: indexflow
+      MINIO_SECRET_KEY: indexflow123
+      MINIO_BUCKET: indexflow
+      INGEST_DOCS: "40"
+      INGEST_CONCURRENCY: "1,2,4,8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9100:9000 \
+            -e MINIO_ROOT_USER=indexflow -e MINIO_ROOT_PASSWORD=indexflow123 \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -sf "http://localhost:9100/minio/health/live" >/dev/null; then
+              echo "MinIO is up."; exit 0
+            fi
+            sleep 2
+          done
+          echo "MinIO did not become ready in time." >&2
+          docker logs minio >&2 || true
+          exit 1
+      - name: Write env file
+        run: |
+          {
+            echo "DATABASE_URL=${DATABASE_URL}"
+            echo "ES_URL=${ES_URL}"
+            echo "REDIS_URL=${REDIS_URL}"
+            echo "MINIO_ENDPOINT=${MINIO_ENDPOINT}"
+            echo "MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}"
+            echo "MINIO_SECRET_KEY=${MINIO_SECRET_KEY}"
+            echo "MINIO_BUCKET=${MINIO_BUCKET}"
+          } > apps/web/.env
+      - name: Apply migrations
+        run: pnpm --filter @indexflow/web prisma migrate deploy
+      - name: Wait for Elasticsearch
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:9200 >/dev/null 2>&1; then echo "ES up"; exit 0; fi
+            sleep 5
+          done
+          echo "Elasticsearch did not become ready"; exit 1
+      - name: Ingestion benchmark
+        run: pnpm --filter @indexflow/web bench:ingest
+
   container:
     name: container build
     runs-on: ubuntu-latest
