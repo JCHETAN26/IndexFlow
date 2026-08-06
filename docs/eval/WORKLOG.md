@@ -1378,3 +1378,125 @@ is safe in production. Measuring recall on real embeddings requires the scale-ev
 fixed corpus size is the honest version of this measurement and is **not yet done**.
 
 **Gate: 9b complete. 9a and 9c outstanding.**
+
+
+---
+
+## 2026-08-06 — Phase 9a: quality vs corpus size, to 100,000 documents
+
+User asked for the full 100k rather than the scoped-down version. Delivered.
+
+Runs: [embed matrix + curve, CI 31070390717](https://github.com/JCHETAN26/IndexFlow/actions/runs/31070390717).
+12 parallel embed shards (~15 min each), then a 589 s evaluation job.
+Dataset `f2b5809f7e56ec8d` — 100,000 documents, 667 judged, **195,980 chunks**.
+
+### Feasibility, and how it was made to fit
+
+Embedding 195,980 chunks at the measured 15.5 chunks/s is **3.5 hours** on one runner — inside the
+6-hour ceiling but with no margin, and one hiccup wastes it. Sharded 12 ways it is ~15 minutes of
+wall clock. Vectors move between jobs as raw little-endian float32 (301 MB); as JSON they would
+have been roughly 3 GB.
+
+Correctness rests on all 12 shards agreeing on the global chunk ordering without ever seeing each
+other. Every ordering is an explicit sort, each shard stamps a `datasetSha`, and the consumer
+refuses to scatter vectors unless all 12 agree. Verified locally first at 600 docs / 4 shards: all
+shards agreed on 1,453 chunks, reassembly left no unfilled slot, every sampled vector had unit norm.
+
+One failure on the first attempt: **2 of 12 shards died with `ECONNREFUSED`** fetching the 70 MB
+TREC-COVID archive. Twelve jobs hitting a university server simultaneously on a cold cache. Fixed
+with a single cache-warming job before the matrix plus jittered retry — better behaviour toward
+someone else's host, not merely more reliable.
+
+### The curve
+
+```
+docs      chunks    w     MRR     R@6      nDCG@10   vs 500
+500       1,085     0.50  0.68     72.3%    68.5%    +0.0pp
+5,000     11,155    0.50  0.68     79.1%    70.9%    +2.3pp
+25,000    49,999    0.50  0.63     73.9%    66.2%    -2.3pp
+100,000   195,980   0.50  0.59     69.2%    61.7%    -6.8pp
+
+Δ MRR (500 − 100,000 docs) = +0.088 [0.025, 0.147]   excludes zero: YES
+```
+
+**Quality degrades with corpus size, and the degradation is statistically real** — the paired
+bootstrap over per-query MRR excludes zero across a 200× corpus growth. This is the scalability
+measurement that actually matters, and it now exists.
+
+The rate is the useful part: **a 200× corpus costs 6.8 nDCG points.** Not catastrophic, not free.
+
+### The decomposition, which is more interesting than the headline
+
+Per-strategy nDCG@10 across the tiers:
+
+| docs | keyword | semantic | hybrid | best single |
+|---|---|---|---|---|
+| 500 | 62.0% | **68.2%** | 68.5% | semantic |
+| 5,000 | 64.8% | 64.8% | **70.9%** | tied |
+| 25,000 | **60.2%** | 57.2% | 66.2% | keyword |
+| 100,000 | **57.8%** | 52.0% | 61.7% | keyword |
+
+**1. The dense leg degrades three times faster than BM25.** Semantic loses 16.2 points from 500 to
+100k; keyword loses 4.2 from its peak. Every added distractor is another chance for the embedding
+space to rank something spurious above the answer, and MiniLM's 384 dimensions have less room to
+keep 196k chunks apart than BM25's vocabulary does.
+
+**2. There is a complete crossover.** At 500 documents semantic beats keyword by 6.2 points; at
+100,000 keyword beats semantic by 5.8 points. **Which retrieval strategy is better is a function of
+corpus size**, and any claim that omits the corpus size is unfalsifiable. The in-domain corpus has
+17 documents, which is why semantic looked so dominant there.
+
+**3. Quality is non-monotonic: 5,000 documents scores *better* than 500** (+2.3 nDCG). The cause is
+visible in the decomposition — keyword *improves* from 62.0% to 64.8% over that step while semantic
+falls. BM25 needs corpus statistics to estimate IDF, and 500 documents is not enough to estimate
+them well. So the smallest tier is not the easiest task; it is the one where the keyword leg is
+least informed.
+
+**4. Hybrid's advantage over the best single strategy grows, then shrinks:** +0.3, +6.1, +6.0,
++3.9 points. It is worth least at 500 documents, where semantic dominates and blending adds
+nothing. That is a **third independent confirmation of the mechanism** proposed after SciFact —
+and the cleanest, because here only corpus size varies while the query set, the labels and the
+blend weight (0.50 at every tier) are all held fixed.
+
+### ANN recall on real embeddings — my caveat was wrong
+
+```
+ANN recall@10 on real embeddings, 195,980 chunks: 100.0% (50 queries)
+```
+
+After 9b I recorded a caveat: 100% ANN recall on uniform random vectors "does not imply 100% on
+real embeddings, because real embeddings are clustered, which is the regime where HNSW actually
+loses recall." **Measured on real MiniLM embeddings over 195,980 chunks, recall@10 is still
+100.0%.** The caveat was over-cautious. pgvector's default HNSW parameters lose nothing at this
+scale on this data, and the 9b number stands rather than needing the hedge I attached to it.
+
+This also removes an explanation for finding 1: the semantic leg's degradation is **not** an ANN
+artifact. Exact search would return the same neighbours. The embedding model itself is what stops
+separating documents as the corpus grows.
+
+### Index build time is the real cost of scale
+
+```
+1,085 chunks    0.2 s
+11,155 chunks   1.5 s
+49,999 chunks  14.6 s
+195,980 chunks 125.2 s
+```
+
+Superlinear: a 4× corpus from 50k to 196k costs 8.6× the build time. Querying stays flat (9b);
+**re-indexing is what a larger corpus makes expensive**, which is what matters for a system whose
+ACL changes trigger re-projection.
+
+### What this does not say
+
+- **One run per tier.** The curve is four points, each measured once. The 500→5,000 rise is +2.3
+  points and has no error bar; only the 500-vs-100,000 comparison was significance-tested.
+- **Distractors are TREC-COVID**, scientific abstracts like SciFact. Chosen so they are hard
+  negatives, but the degradation rate would differ with a differently-related distractor pool. A
+  corpus of unrelated documents would degrade more slowly and flatter the system.
+- **The judged set is fixed at 667 documents** while distractors grow. That is the correct design
+  for this question, but it means the 100k tier is not "a 100k-document benchmark" — it is a
+  667-document benchmark with 99,333 distractors.
+- Still out of domain: this measures the retrieval stack, not permission-aware workspace search.
+
+**Gate: Phase 9a complete. 9c (end-to-end ingestion throughput) outstanding.**
