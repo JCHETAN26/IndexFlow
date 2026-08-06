@@ -85,10 +85,29 @@ export async function fetchSubset(spec: BeirSpec): Promise<string> {
   const dir = join(CACHE_DIR, spec.name);
 
   if (!(await exists(zipPath))) {
-    console.log(`[beir] downloading ${spec.name} from ${spec.url}`);
-    const res = await fetch(spec.url);
-    if (!res.ok || !res.body) throw new Error(`[beir] download failed: HTTP ${res.status}`);
-    await pipeline(Readable.fromWeb(res.body as never), createWriteStream(zipPath));
+    // Retry with backoff. The host is a university server, and a CI matrix that starts twelve
+    // jobs at once on a cold cache will have some of them refused outright — which is exactly
+    // what happened on the first 100k run (ECONNREFUSED on 2 of 12 shards). Jitter keeps the
+    // retries from re-synchronising into a second thundering herd.
+    const ATTEMPTS = 5;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+      try {
+        console.log(`[beir] downloading ${spec.name} (attempt ${attempt}/${ATTEMPTS})`);
+        const res = await fetch(spec.url);
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        await pipeline(Readable.fromWeb(res.body as never), createWriteStream(zipPath));
+        lastErr = undefined;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === ATTEMPTS) break;
+        const backoff = Math.round(2 ** attempt * 1000 + Math.random() * 3000);
+        console.log(`[beir] download failed (${String(e)}); retrying in ${backoff}ms`);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+    if (lastErr) throw new Error(`[beir] download of ${spec.name} failed after ${ATTEMPTS} attempts: ${String(lastErr)}`);
   }
 
   const actual = await sha256File(zipPath);

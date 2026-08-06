@@ -251,8 +251,37 @@ jobs:
   # margin, and one hiccup wastes the lot. Sharded 12 ways it is ~14 minutes of wall clock, and a
   # failure costs one shard. Vectors move between jobs as float32 artifacts (234 MB total); as JSON
   # they would be roughly 3 GB.
+  # One job warms the archive cache before the matrix starts. Twelve jobs fetching the same 70 MB
+  # file from a university host at once got 2 of them refused on the first run; this is both more
+  # reliable and better behaviour toward someone else's server.
+  scale-curve-fetch:
+    name: scale curve · fetch corpora
+    if: github.event_name == 'workflow_dispatch' && inputs.run_scale_curve
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Cache BEIR archives
+        uses: actions/cache@v4
+        with:
+          path: apps/web/.evalrun/beir
+          key: beir-scale-curve-v1
+      - name: Write env file
+        run: echo "DATABASE_URL=postgresql://unused" > apps/web/.env
+      # Building the dataset forces both archives to be fetched and hash-verified.
+      - name: Warm corpus cache
+        run: SHARD_INDEX=0 SHARD_COUNT=100000 pnpm --filter @indexflow/web eval:embed-shard
+
   scale-curve-embed:
     name: scale curve · embed shard ${{ matrix.shard }}
+    needs: scale-curve-fetch
     if: github.event_name == 'workflow_dispatch' && inputs.run_scale_curve
     runs-on: ubuntu-latest
     timeout-minutes: 90
