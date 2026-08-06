@@ -12,6 +12,10 @@ on:
         type: choice
         options: [scifact, nfcorpus]
         default: scifact
+      run_scale_curve:
+        description: "Run the 100k-document scale curve (12 parallel embed jobs, ~40 min total)"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -240,6 +244,120 @@ jobs:
         with:
           name: latency-bench
           path: apps/web/.evalrun/
+
+  # ── Phase 9a: quality vs corpus size, to 100k documents ──────────────────
+  #
+  # Embedding 152k chunks is ~2.7 hours on one runner — inside the 6-hour ceiling but with no
+  # margin, and one hiccup wastes the lot. Sharded 12 ways it is ~14 minutes of wall clock, and a
+  # failure costs one shard. Vectors move between jobs as float32 artifacts (234 MB total); as JSON
+  # they would be roughly 3 GB.
+  scale-curve-embed:
+    name: scale curve · embed shard ${{ matrix.shard }}
+    if: github.event_name == 'workflow_dispatch' && inputs.run_scale_curve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    env:
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_COUNT: "12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Cache BEIR archives
+        uses: actions/cache@v4
+        with:
+          path: apps/web/.evalrun/beir
+          key: beir-scale-curve-v1
+      - name: Write env file
+        run: echo "DATABASE_URL=postgresql://unused" > apps/web/.env
+      - name: Embed shard
+        run: pnpm --filter @indexflow/web eval:embed-shard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: curve-shard-${{ matrix.shard }}
+          path: apps/web/.evalrun/shards/
+          retention-days: 3
+
+  scale-curve:
+    name: scale curve · evaluate
+    needs: scale-curve-embed
+    if: github.event_name == 'workflow_dispatch' && inputs.run_scale_curve
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: indexflow
+          POSTGRES_PASSWORD: indexflow
+          POSTGRES_DB: indexflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U indexflow -d indexflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: "-Xms2g -Xmx2g"
+          ingest.geoip.downloader.enabled: "false"
+        ports:
+          - 9200:9200
+    env:
+      DATABASE_URL: postgresql://indexflow:indexflow@localhost:5432/indexflow?schema=public
+      ES_URL: http://localhost:9200
+      # 152k vectors plus chunk bodies; the default heap is not enough to reassemble them.
+      NODE_OPTIONS: "--max-old-space-size=6144"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Cache BEIR archives
+        uses: actions/cache@v4
+        with:
+          path: apps/web/.evalrun/beir
+          key: beir-scale-curve-v1
+      - name: Download shard vectors
+        uses: actions/download-artifact@v4
+        with:
+          pattern: curve-shard-*
+          merge-multiple: true
+          path: apps/web/.evalrun/shards/
+      - name: Write env file
+        run: |
+          {
+            echo "DATABASE_URL=${DATABASE_URL}"
+            echo "ES_URL=${ES_URL}"
+          } > apps/web/.env
+      - name: Apply migrations
+        run: pnpm --filter @indexflow/web prisma migrate deploy
+      - name: Wait for Elasticsearch
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:9200 >/dev/null 2>&1; then echo "ES up"; exit 0; fi
+            sleep 5
+          done
+          echo "Elasticsearch did not become ready"; exit 1
+      - name: Scale curve
+        run: pnpm --filter @indexflow/web eval:scale-curve
 
   container:
     name: container build

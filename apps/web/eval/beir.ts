@@ -46,6 +46,13 @@ export const BEIR_SUBSETS: Record<string, BeirSpec> = {
     sha256: "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
     tuneQrels: "train",
   },
+  "trec-covid": {
+    name: "trec-covid",
+    url: "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/trec-covid.zip",
+    sha256: "120f42a7864d2214234537733c0d2c6684e42fdfafff2c5eacf98afca6656aa0",
+    // Used only as a distractor pool for the Phase 9a scale curve — its own qrels are not scored.
+    tuneQrels: "test",
+  },
   nfcorpus: {
     name: "nfcorpus",
     url: "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
