@@ -1500,3 +1500,112 @@ ACL changes trigger re-projection.
 - Still out of domain: this measures the retrieval stack, not permission-aware workspace search.
 
 **Gate: Phase 9a complete. 9c (end-to-end ingestion throughput) outstanding.**
+
+
+---
+
+## 2026-08-07 — Phase 9c: end-to-end ingestion throughput
+
+Run: [CI 31154323242](https://github.com/JCHETAN26/IndexFlow/actions/runs/31154323242). 40 documents
+(~450 words, 3 chunks each) through a real BullMQ `Worker` calling the real `ingestDocument`,
+against real Redis, MinIO, Postgres and Elasticsearch.
+
+### CI capacity, and a workflow change
+
+Two runs were lost before this one: dispatching five heavyweight jobs at once left most of them
+queued until GitHub cancelled them at the 15-minute mark, twice, taking trivial jobs like unit
+tests down with them. Only a few jobs run concurrently on this account, so they were starving each
+other. The heavy benchmarks are now gated behind a mutually-exclusive `benchmark` input — one per
+dispatch. They live in `ci.yml` rather than their own workflow because a workflow file cannot be
+dispatched until it exists on the default branch, and `main` is protected.
+
+### A defect in my own instrument, caught before publishing
+
+The first successful run reported **embed 99.5%, writes 0.0%** — that the database, outbox and
+Elasticsearch projection are free. They are not. The write stages were computed as
+`full ingestDocument − stages timed directly`, but `ingestDocument` redoes the download, chunk and
+embed itself, so the subtraction landed at zero. Fixed by timing the read stages on one document
+and a full ingest on a second of the same size, with the model warmed first so its one-off load is
+not charged to embedding.
+
+**The corrected numbers invert the conclusion**, which is why it mattered.
+
+### Result
+
+```
+stage breakdown (one document, model warm, 3 chunks):
+  postgres txn + outbox + ES projection    952.6 ms    89.5%
+  embed                                    106.0 ms    10.0%
+  minio download                             5.4 ms     0.5%
+  chunk                                      0.3 ms     0.0%
+  extract                                    0.1 ms     0.0%
+  TOTAL                                   1064.3 ms
+
+throughput vs worker concurrency (4 logical CPUs):
+  concurrency   docs/s    wall (s)   per-doc p50 (ms)   speedup
+  1               0.99       40.3               1015    1.00x
+  2               1.99       20.1               1016    2.00x
+  4               3.99       10.0               1020    4.02x
+  8               4.46        9.0               1925    4.49x
+```
+
+### The bottleneck is the Elasticsearch refresh, not embedding
+
+**Pre-registered prediction: embedding would be >70% of the pipeline. It is 10%.** With the model
+warm, embedding three chunks costs 106 ms. The write path costs **952 ms — nine times as much.**
+
+Mechanism confirmed in the code rather than inferred:
+
+- `lib/outbox.ts:171` — `deleteDocumentChunks(documentId, index, true)`, where `true` forces an
+  **immediate** Elasticsearch refresh.
+- `lib/outbox.ts:172` — `indexChunks(esChunks, index, "wait_for")`, which blocks until the next
+  scheduled refresh. Elasticsearch's default `index.refresh_interval` is **1 second**, which is
+  the 952 ms almost exactly.
+
+So ingestion latency is set by two forced index refreshes per document, and is essentially
+independent of document size. This is not a bug — it is the deliberate guarantee stated in
+`lib/ingest.ts`: "project immediately so the document is searchable when the worker reports done."
+The measurement puts a price on that guarantee: **~1 second per document, 90% of ingestion cost.**
+
+Two ways to spend it differently, both with real trade-offs, neither taken here because they touch
+the cross-store consistency properties that §2–§3 exist to protect:
+
+1. The `refresh: true` on the delete is plausibly redundant, since the `wait_for` on the following
+   bulk index would refresh anyway. That is a single-line change and needs the consistency suite
+   run against it.
+2. Batching projections across documents would amortise one refresh over many, at the cost of the
+   "searchable the moment the worker reports done" guarantee.
+
+Flagged rather than changed: both alter a documented correctness property, which is the user's call.
+
+### Scaling
+
+Linear to the core count — 2.00× at concurrency 2, **4.02× at 4** — then flat: 4.49× at concurrency
+8, with per-document latency **doubling** from 1,020 ms to 1,925 ms. Throughput saturates at
+**~4.5 documents/second on 4 cores**, or roughly 1 doc/s/core.
+
+The near-perfect scaling to 4 is itself evidence for the diagnosis: 90% of the time is spent
+*waiting* on Elasticsearch, and waiting parallelises freely. Past the core count the 10% that is
+CPU-bound embedding starts contending, and latency inflates without throughput following.
+
+### What the published number overstated
+
+`RESULTS.md` §6 reports bulk-load throughput — 26,103 Postgres rows/s — under a heading about
+index throughput. Real ingestion is **4.5 documents/s ≈ 13 chunks/s**. The bulk figure overstates
+what an upload achieves by roughly **three orders of magnitude**. It was labelled as bulk load, so
+it was not a false statement; it was an unanswerable one, because the number a reader wants did
+not exist. It does now.
+
+### Re-indexing, combining 9a and 9c
+
+From 9a, HNSW build time: 0.2 s at 1k chunks → 125.2 s at 196k, superlinear. From 9c, ingestion
+runs at ~13 chunks/s per 4-core worker. So for a 196k-chunk corpus:
+
+- **Rebuilding the vector index**: ~2 minutes. Cheap.
+- **Re-ingesting from source**: ~4.2 hours on one 4-core worker. Not cheap.
+
+The two are not interchangeable, and the distinction matters: an ACL change triggers *projection*
+(cheap), whereas an embedding-model change triggers *re-ingestion* (hours). Changing the embedding
+model is the expensive operation in this system, and nothing before this measured it.
+
+**Gate: Phase 9 complete — 9a, 9b and 9c all measured.**
