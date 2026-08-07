@@ -94,13 +94,25 @@ async function cleanup(docs: Seeded[]) {
   }
 }
 
-/** Time each stage on one document, to attribute the throughput number to a cause. */
+/**
+ * Time each stage, to attribute the throughput number to a cause rather than guessing.
+ *
+ * The write stages cannot be timed by subtracting from a full `ingestDocument` run on the same
+ * document: `ingestDocument` redoes the download, chunk and embed itself, so the subtraction lands
+ * near zero and reports "the database is free", which is an artifact. Instead the read/CPU stages
+ * are timed directly on one document and a full ingest is timed on a second, identical-sized one,
+ * with the model already warm in both. The difference is then the write path.
+ */
 async function stageBreakdown(ownerId: string) {
-  const [doc] = await seed(1, ownerId);
-  const row = await prisma.document.findUnique({
-    where: { id: doc.id },
+  // Warm the ONNX model first; otherwise its one-off load (seconds) is attributed to embedding.
+  await embed(["warmup"]);
+
+  const [a, b] = await seed(2, ownerId);
+  const rowA = await prisma.document.findUnique({
+    where: { id: a.id },
     select: { storageKey: true, fileType: true },
   });
+
   const t: Record<string, number> = {};
   let mark = performance.now();
   const lap = (k: string) => {
@@ -108,23 +120,23 @@ async function stageBreakdown(ownerId: string) {
     mark = performance.now();
   };
 
-  const { body: stream } = await getObject(row!.storageKey!);
+  const { body: stream } = await getObject(rowA!.storageKey!);
   lap("minio download");
-  const text = await extractText(stream, row!.fileType);
+  const text = await extractText(stream, rowA!.fileType);
   lap("extract");
   const chunks = chunkText(text);
   lap("chunk");
   await embed(chunks.map((c) => c.content));
   lap("embed");
+  const readSide = t["minio download"] + t.extract + t.chunk + t.embed;
 
-  // The remaining stages are timed by running the real ingest, then subtracting what we measured.
+  // Second document, same size, model warm: a full ingest minus the read side is the write side.
   const full = performance.now();
-  await ingestDocument(doc.id);
+  await ingestDocument(b.id);
   const fullMs = performance.now() - full;
-  const measured = t["minio download"] + t.extract + t.chunk + t.embed;
-  t["postgres + outbox + ES projection"] = Math.max(0, fullMs - measured);
+  t["postgres txn + outbox + ES projection"] = Math.max(0, fullMs - readSide);
 
-  await cleanup([doc]);
+  await cleanup([a, b]);
   return { stages: t, chunks: chunks.length, totalMs: fullMs };
 }
 
