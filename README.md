@@ -85,8 +85,8 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 > 2026-08-05; the security, generation and latency evals 2026-07-26. That file is the only source
 > of truth for measurements in this repo, and it keeps superseded numbers struck through with their
 > reason rather than deleting them. **Do not edit numbers here by hand; re-run the evals and update
-> that file.** Method and pre-registered predictions are in
-> [`docs/eval/WORKLOG.md`](docs/eval/WORKLOG.md).
+> that file.** Findings summary: [`docs/eval/FINDINGS.md`](docs/eval/FINDINGS.md) — including what
+> could *not* be verified. Method and pre-registered predictions: [`docs/eval/WORKLOG.md`](docs/eval/WORKLOG.md).
 
 | What | Command | Result |
 |---|---|---|
