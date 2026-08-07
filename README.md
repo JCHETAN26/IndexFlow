@@ -100,7 +100,8 @@ plus an explanation instead of generating. Off unless set. See `.env.example`.
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** pass — by-id fetch/delete/upload and job listings are gated |
 | Cross-store consistency | `pnpm --filter @indexflow/web consistency:check` | **8/8** pass — no lost revokes, no false "ready", drift repaired |
 | Adversarial | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** unauthorised disclosures, **0/10** prompt-injection leaks |
-| Latency at scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks: semantic 2.4–2.9 ms, hybrid 8.6–10.2 ms |
+| Latency at scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→50k chunks: semantic 1.3–1.5 ms, hybrid 5.9–6.9 ms; ANN recall@10 **100%** |
+| Ingestion throughput | `pnpm --filter @indexflow/web bench:ingest` | **4.5 docs/s** on 4 cores — 90% of it waiting on the Elasticsearch refresh, not embedding |
 
 In-domain retrieval is measured on **33 of 34 held-out queries** — one has no relevant document and
 is excluded from every ranking metric rather than scored as a miss, which is `trec_eval`'s

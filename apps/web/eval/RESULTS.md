@@ -35,7 +35,9 @@ then run the commands below in order. The generation eval takes ~30 minutes on t
 | Generation quality | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%** (human-calibrated, κ 1.00); refusal **92%** (LLM-judged) | PASS |
 | Judge calibration | `pnpm --filter @indexflow/web judge:calibrate` | 40 blind human labels: **90%** agreement, κ **0.29**; citation judge lenient | n/a |
 | Adversarial security | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** disclosures, **0/10** injection leaks | PASS |
-| Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks | n/a |
+| Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→50k chunks; ANN recall@10 100% | n/a |
+| Ingestion throughput | `pnpm --filter @indexflow/web bench:ingest` | **4.5 docs/s** on 4 cores; 90% of the cost is the ES refresh, not embedding | n/a |
+| Label audit | `pnpm --filter @indexflow/web labels:export` | tooling ready, **not yet run** — needs a human labeller | n/a |
 
 ---
 
@@ -626,47 +628,113 @@ access (fetching a document by URL); that gap is covered separately by `acl:dao`
 ## 6. Latency & scale
 
 ```
-COMMAND:  BENCH_SCALES=1000,10000,50000,100000 BENCH_QUERIES=200 pnpm --filter @indexflow/web bench:latency
-STARTED:  2026-07-26T00:59:29Z
-FINISHED: 2026-07-26T01:00:33Z
+COMMAND:  BENCH_SCALES=1000,10000,50000 BENCH_QUERIES=150 BENCH_REPEATS=3 pnpm ... bench:latency
+RUN:      2026-08-05 (ubuntu-latest, CI 31046256117)
 EXIT:     0
 ```
 
+> **The previous capture of this section was an artifact and is withdrawn.** It reported
+> ~~keyword p50 9.1–10.6 ms, semantic 2.4–2.9 ms, hybrid 8.6–10.2 ms~~ across 1k–100k chunks, with
+> **hybrid p50 *below* keyword p50 at three of four scales** — impossible, since hybrid awaits both
+> legs. The prose even asserted the opposite of its own table.
+>
+> Cause: the benchmark ran keyword, then semantic, then hybrid in fixed order **on the same query
+> and vector every iteration.** By the time hybrid ran, Elasticsearch had just served that exact
+> query and Postgres had just executed that exact vector scan, so both of hybrid's legs were
+> answered from caches the two standalone measurements had filled. Hybrid was timed warm against
+> two cold competitors.
+>
+> Fixed: every (trial, strategy) pair now gets its own query, strategy order is shuffled per trial,
+> and the bench prints a loud warning if hybrid p50 ever lands below the slower leg again. No
+> warning fires below. The corrected run covers 1k–50k rather than 1k–100k.
+
 ```
-scales: 1000, 10000, 50000, 100000 · queries/scale: 200 (+20 warmup) · dim 384 · k 10
+scale     strategy   p50    p95    p99   mean   per-run p50 (3 runs)   ANN recall@10
+1,000     keyword    5.7   12.3   16.8    6.8   9.0 / 5.3 / 5.2        100.0%
+          semantic   1.5    2.5    4.0    1.6   1.8 / 1.3 / 1.4
+          hybrid     5.9   13.1   23.1    7.1   9.1 / 5.4 / 5.3
+10,000    keyword    5.8    7.6   10.0    6.0   5.7 / 5.9 / 5.7        100.0%
+          semantic   1.5    1.9    2.3    1.5   1.4 / 1.5 / 1.5
+          hybrid     5.9    7.9   11.0    6.0   5.9 / 6.0 / 5.7
+50,000    keyword    6.9    9.4   10.9    6.9   7.4 / 6.7 / 6.7        100.0%
+          semantic   1.3    1.7    3.0    1.3   1.4 / 1.2 / 1.2
+          hybrid     6.9   10.1   12.7    7.0   7.2 / 6.7 / 6.6
 
-── scale 1,000 chunks ──
-  loaded: pg 20,532/s · es 930/s · hnsw build 193ms
-  keyword   p50     9.4  p95    86.7  p99   140.7  mean    17.1  (ms)
-  semantic  p50     2.9  p95     5.9  p99     7.5  mean     3.3  (ms)
-  hybrid    p50     9.3  p95    94.7  p99   110.2  mean    16.5  (ms)
-
-── scale 10,000 chunks ──
-  loaded: pg 10,806/s · es 4,545/s · hnsw build 1502.6ms
-  keyword   p50     9.1  p95    18.3  p99    49.4  mean    10.7  (ms)
-  semantic  p50     2.4  p95     4.8  p99     7.3  mean     2.7  (ms)
-  hybrid    p50     8.6  p95    18.5  p99    29.7  mean      10  (ms)
-
-── scale 50,000 chunks ──
-  loaded: pg 31,085/s · es 11,630/s · hnsw build 5254.9ms
-  keyword   p50    10.6  p95    20.7  p99    39.3  mean    12.1  (ms)
-  semantic  p50     2.6  p95     5.2  p99      11  mean     3.1  (ms)
-  hybrid    p50    10.2  p95    17.3  p99    28.6  mean      11  (ms)
-
-── scale 100,000 chunks ──
-  loaded: pg 58,013/s · es 16,168/s · hnsw build 13136.2ms
-  keyword   p50    10.4  p95    19.2  p99    25.3  mean      11  (ms)
-  semantic  p50     2.4  p95     3.8  p99     6.6  mean     2.6  (ms)
-  hybrid    p50     9.4  p95    17.3  p99    27.7  mean    10.1  (ms)
+HNSW build: 37.7 ms @1k · 586.7 ms @10k · 4,615 ms @50k · 125,200 ms @196k (§1b)
 ```
 
-p50 is essentially flat from 1k to 100k chunks on every strategy — the pgvector HNSW index and the
-Elasticsearch inverted index both do their job. The semantic leg is consistently the faster one
-(2.4–2.9 ms p50, in-process to the database); the keyword leg (9.1–10.6 ms p50) dominates hybrid
-latency (8.6–10.2 ms p50) because hybrid waits on both. The worst tail is at the *smallest* scale (p95 86.7 ms
-keyword at 1k, vs 19.2 ms at 100k), which is cold-cache and host noise, not a scaling effect.
+Hybrid now sits at or just above the slower leg at every scale — the only physically possible
+arrangement, and exactly `max(keyword, semantic) + blend`.
 
-HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s at 100k.
+**The Elasticsearch hop is the whole hybrid latency budget.** Keyword 5.7–6.9 ms against
+in-process pgvector's 1.3–1.5 ms. **Semantic latency is flat and slightly decreasing** across a 50×
+corpus, so HNSW is genuinely sublinear.
+
+**Run-to-run spread earns its place immediately.** At 1k, keyword per-run p50 was 9.0 / 5.3 / 5.2 —
+the first run 70% high. A single run would have published 9 ms and invited a story about
+small-index overhead. It is warmup, and only three repeats make that visible.
+
+**ANN recall@10 is 100% at every scale**, so the speed is not bought with recall. Independently
+confirmed on **real** embeddings over 195,980 chunks in §1b, also 100.0% — an earlier draft of this
+file cautioned that synthetic uniform vectors are the easy case for HNSW and real clustered
+embeddings would score lower. Measured, they do not.
+
+---
+
+## 6b. Ingestion throughput, end to end
+
+```
+COMMAND:  INGEST_DOCS=40 INGEST_CONCURRENCY=1,2,4,8 pnpm --filter @indexflow/web bench:ingest
+RUN:      2026-08-07 (ubuntu-latest, CI 31154323242) — 4 logical CPUs
+EXIT:     0
+```
+
+> **This is the number §6 never had.** "Index throughput" above is *bulk-load* speed — batched
+> writes straight into Postgres and Elasticsearch. No upload uses that path. Real ingestion runs
+> MinIO download → extract → chunk → embed → Postgres transaction → outbox → ES projection, through
+> BullMQ. The bulk figure overstates what an upload achieves by roughly **three orders of
+> magnitude**. It was correctly labelled, but it answered a question nobody asks.
+
+```
+stage breakdown (one document, 3 chunks, model warm):
+  postgres txn + outbox + ES projection    952.6 ms    89.5%
+  embed                                    106.0 ms    10.0%
+  minio download                             5.4 ms     0.5%
+  chunk                                      0.3 ms     0.0%
+  extract                                    0.1 ms     0.0%
+  TOTAL                                   1064.3 ms
+
+throughput vs worker concurrency:
+  concurrency   docs/s    wall (s)   per-doc p50 (ms)   speedup
+  1               0.99       40.3               1015    1.00x
+  2               1.99       20.1               1016    2.00x
+  4               3.99       10.0               1020    4.02x
+  8               4.46        9.0               1925    4.49x
+```
+
+**The bottleneck is the Elasticsearch refresh, not embedding.** With the model warm, embedding
+three chunks costs 106 ms; the write path costs 952 ms — nine times more. The mechanism is in the
+code, not inferred: `lib/outbox.ts:171` forces an immediate ES refresh on the delete, and
+`lib/outbox.ts:172` indexes with `refresh: "wait_for"`, which blocks until the next refresh cycle.
+Elasticsearch's default `index.refresh_interval` is 1 second, which is the 952 ms almost exactly.
+
+That is a **deliberate guarantee**, stated in `lib/ingest.ts`: the document is searchable the moment
+the worker reports done. This measurement prices it at ~1 second per document, 90% of ingestion
+cost. Two ways to spend it differently — dropping the likely-redundant `refresh: true` on the
+delete, or batching projections across documents — both touch the cross-store consistency
+properties §3c exists to protect, so neither is taken here.
+
+**Scaling is linear to the core count** (4.02× at concurrency 4) then flat (4.49× at 8) with
+per-document latency doubling. Saturation is **~4.5 documents/second on 4 cores**, about 1 doc/s
+per core. The clean scaling to 4 is itself evidence for the diagnosis: 90% of the time is spent
+*waiting* on Elasticsearch, and waiting parallelises freely; past the core count the 10% that is
+CPU-bound embedding starts contending.
+
+**What this implies for re-indexing.** For a 196k-chunk corpus, rebuilding the HNSW index takes
+~2 minutes (§1b), but re-ingesting from source takes **~4.2 hours** on one 4-core worker. The two
+are not interchangeable: an ACL change triggers projection, which is cheap, while an
+embedding-model change triggers full re-ingestion, which is hours. **Changing the embedding model
+is the expensive operation in this system.**
 
 ---
 
@@ -692,6 +760,12 @@ HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s a
   human (§4); the in-domain relevance judgments themselves rest on one person's unaudited opinion
   about which document answers which query. BEIR's judgments are third-party, which is part of why
   §1b exists.
+- **The relevance labels are still unaudited.** `labels:export` generates a blind 20-pair sheet
+  (10 currently-labelled-relevant, 10 highest-overlap currently-labelled-irrelevant) and
+  `labels:score` reports agreement and Cohen's kappa, but **no human has labelled it yet**. Until
+  then every retrieval number here rests on one person's unaudited judgment, and under-labelling
+  in particular would deflate recall for every strategy equally — invisible in any comparison,
+  wrong in absolute terms.
 - **The permission filter's effect on ranking quality is unmeasured.** The ACL is tested for leaks
   (§2, §3, §5), never for what removing candidates does to result quality for a restricted viewer.
 - **The latency benchmark uses synthetic data**: random 384-dim unit vectors and text drawn from a
