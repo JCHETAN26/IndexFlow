@@ -247,6 +247,17 @@ jobs:
       - name: Run direct-object-access checks
         run: pnpm --filter @indexflow/web acl:dao
 
+      # The permission leak test is the single most valuable check in the repository and was
+      # on-demand only: a retrieval regression failed the build, an ACL regression did not, on a
+      # project whose central claim is permission-awareness. Its generation-layer assertion needs
+      # Ollama and skips loudly here; the eight retrieval-leg assertions — including the positive
+      # controls that stop it passing because retrieval is simply broken — all run.
+      - name: Run permission leak checks
+        run: pnpm --filter @indexflow/web acl:leak
+
+      - name: Run sharing lifecycle checks
+        run: pnpm --filter @indexflow/web acl:sharing
+
       # Cross-store consistency gate: proves a revoke racing an in-flight index is not lost, that
       # an unprojected document never reads as INDEXED, and that reconciliation repairs drift.
       - name: Run cross-store consistency checks
