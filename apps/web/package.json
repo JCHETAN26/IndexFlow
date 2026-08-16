@@ -43,7 +43,8 @@
     "labels:export": "tsx eval/label-audit.ts export",
     "labels:score": "tsx eval/label-audit.ts score",
     "saasbench:generate": "tsx eval/saasbench/generate.ts",
-    "saasbench:gate": "tsx --env-file=.env eval/saasbench/gate.ts"
+    "saasbench:gate": "tsx --env-file=.env eval/saasbench/gate.ts",
+    "saasbench:scale": "tsx --env-file=.env eval/saasbench/scale-run.ts"
   },
   "prisma": {
     "schema": "prisma/schema.prisma"
