@@ -21,6 +21,15 @@ on:
         type: choice
         options: [scifact, nfcorpus]
         default: scifact
+      # The before/after for the projection-refresh change has to be measured on ONE runner with
+      # ONE version of the benchmark. The 4.5 docs/s figure predates the warmup, the repeats and
+      # the refresh counters, so it cannot serve as the "before" — comparing against it would be
+      # comparing instruments. Dispatch `ingestion` twice, once per setting, to get an honest pair.
+      projection_refresh:
+        description: "Projection refresh mode (ingestion only): default = forced, wait_for = old behaviour"
+        type: choice
+        options: [default, wait_for]
+        default: default
 
 jobs:
   build:
@@ -616,6 +625,8 @@ jobs:
       MINIO_BUCKET: indexflow
       INGEST_DOCS: "40"
       INGEST_CONCURRENCY: "1,2,4,8"
+      # "default" is not "wait_for", so lib/outbox.ts resolves it to the forced refresh.
+      PROJECTION_REFRESH: ${{ inputs.projection_refresh }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
