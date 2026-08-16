@@ -80,3 +80,23 @@ The honest alternative, which needs no CI confirmation and is arguably the bette
 
 The gate story is worth more than any score it produced. A benchmark that passes its own quality
 audit on the first attempt has usually not been audited.
+
+---
+
+## Phases 6/7 — scale curve
+
+| Claim | Metric | Evidence | Status | Résumé safe |
+|---|---:|---|---|---|
+| SaaSBench corpora are nested, so a scale curve grows only the haystack | prefix check at 3,600 vs 4,200 | [`scale-evaluation.md`](scale-evaluation.md) §1 | **VERIFIED** | Yes — as a design property |
+| Incremental indexing is equivalent to rebuilding each rung | rung 3,400 reproduces the gate exactly (0.238 / 0.168 / 0.250) | §1 | **VERIFIED** | Yes |
+| Hybrid beats both legs on SaaSBench | 0.250 vs 0.238 / 0.168 | [`saasbench-design.md`](saasbench-design.md) §4 | **VERIFIED at 3,400 documents** | Yes — with the corpus size stated |
+| Chunking changed which strategy wins | keyword led at 1.00 chunks/doc; hybrid leads at 2.25 | `saasbench-design.md` §4 | **VERIFIED** | Yes — a good methodology story |
+| Retrieval quality degrades by X across a 30× corpus | — | **no rung above 3,400 measured** | **BLOCKED** | **No** — there is no scale result |
+| SaaSBench hybrid advantage survives to 100K | — | not measured | **UNVERIFIED** | **No** — BEIR already showed the winner is a function of corpus size |
+
+### Phase 6/7 status
+
+**BLOCKED on compute, not design.** Measured cost: 23 chunks/s embedding and 0.49 s/query retrieval
+under exact KNN, against a ladder needing ~225,000 chunks. That is ~2.8 hours of embedding alone and
+does not fit a 45-minute CI job. Requires sharded embedding (the Phase 9a pattern, 12 parallel jobs)
+and ANN above the small rungs with a fresh recall check on this corpus.
