@@ -1,13 +1,18 @@
 # IndexFlow — evaluation results
 
-**Run date: 2026-07-26 (UTC).** Every eval below was executed exactly once, in sequence, against
-live services. The output is captured verbatim — nothing here is retyped or rounded by hand.
+**Run dates: 2026-07-26 for the security, generation and latency evals; 2026-08-05 for retrieval
+(§1) and the scale runs (§1b).** Every eval below was executed against live services and captured
+verbatim — nothing here is retyped or rounded by hand. Where a number superseded an earlier one,
+the earlier value is struck through with its reason rather than deleted.
 
 > **This file is the single source of truth for every number in this repository.**
 > The README quotes this file and nothing else. If a number appears anywhere else in the repo and
 > disagrees with this file, this file is right and the other place is stale.
 
-**Environment.** 8 GB Mac (Apple silicon), Node v22.12.0. Services in local Docker:
+**Environment.** §1 and §1b run on GitHub Actions `ubuntu-latest` (Postgres 16 + pgvector,
+Elasticsearch 8.15.3), with run ids given per section; the 2026-07-28 capture of §1 reproduced
+bit-for-bit there, so those results are not machine-specific. Everything else:
+8 GB Mac (Apple silicon), Node v22.12.0. Services in local Docker:
 Postgres 16 + pgvector, Elasticsearch 8.15.3 (512 MB heap), Redis 7, MinIO. Generation and judging
 run on local Ollama — `llama3.2:3b` (generator), `qwen2.5:7b` (relevance/citation judge),
 `bespoke-minicheck` (per-claim faithfulness). No API keys, no network calls.
@@ -19,7 +24,10 @@ then run the commands below in order. The generation eval takes ~30 minutes on t
 
 | Eval | Command | Headline | Gate |
 |---|---|---|---|
-| Retrieval quality (held-out) | `pnpm --filter @indexflow/web eval` | semantic **MRR 0.94**; hybrid+rerank 0.90; hybrid 0.85; keyword 0.73 | PASS |
+| Retrieval quality (held-out, 17 docs) | `pnpm --filter @indexflow/web eval` | semantic **MRR 0.97**; hybrid+rerank 0.93; hybrid 0.89; keyword 0.75 — **benchmark saturated, see §1** | PASS |
+| Retrieval at scale (BEIR SciFact) | `BEIR_SUBSET=scifact … eval:scale` | hybrid **nDCG@10 0.707** over 5,183 docs, above published BM25 0.665 | n/a |
+| Retrieval at scale (BEIR NFCorpus) | `BEIR_SUBSET=nfcorpus … eval:scale` | hybrid **nDCG@10 0.332** over 3,633 docs; depth, not ranking, limits recall | n/a |
+| Metric cross-check | `python3 eval/crosscheck.py` | agrees with `pytrec_eval` to machine epsilon, no correction | PASS |
 | Permission leaks | `pnpm --filter @indexflow/web acl:leak` | **9/9**, no leaks | PASS |
 | Sharing lifecycle | `pnpm --filter @indexflow/web acl:sharing` | **8/8** | PASS |
 | Direct object access | `pnpm --filter @indexflow/web acl:dao` | **13/13** | PASS |
@@ -27,7 +35,9 @@ then run the commands below in order. The generation eval takes ~30 minutes on t
 | Generation quality | `pnpm --filter @indexflow/web eval:rag` | faithfulness **98%** (human-calibrated, κ 1.00); refusal **92%** (LLM-judged) | PASS |
 | Judge calibration | `pnpm --filter @indexflow/web judge:calibrate` | 40 blind human labels: **90%** agreement, κ **0.29**; citation judge lenient | n/a |
 | Adversarial security | `pnpm --filter @indexflow/web eval:adversarial` | **0/30** disclosures, **0/10** injection leaks | PASS |
-| Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→100k chunks | n/a |
+| Latency & scale | `pnpm --filter @indexflow/web bench:latency` | p50 flat 1k→50k chunks; ANN recall@10 100% | n/a |
+| Ingestion throughput | `pnpm --filter @indexflow/web bench:ingest` | **4.5 docs/s** on 4 cores; 90% of the cost is the ES refresh, not embedding | n/a |
+| Label audit | `pnpm --filter @indexflow/web labels:export` | tooling ready, **not yet run** — needs a human labeller | n/a |
 
 ---
 
@@ -35,128 +45,306 @@ then run the commands below in order. The generation eval takes ~30 minutes on t
 
 ```
 COMMAND:  pnpm --filter @indexflow/web eval
-RUN:      2026-07-28 (re-run after the query/passage reranking fix in 8d9a186)
+RUN:      2026-08-05 (ubuntu-latest, CI run 30964731360)
 EXIT:     0
 ```
 
-> **These numbers replace the earlier ones, and they are lower. That is the point of this
-> section.** The previous run reported hybrid MRR 0.96 over 34 queries — but the hybrid weight
-> was chosen by a sweep on those same 34 queries, and the set skewed easy. This run selects the
-> weight on a 30-query tuning split and reports on 34 queries it has never seen.
+> **These numbers supersede the 2026-07-28 capture, and most of them went UP without the system
+> improving.** The cause is a scoring fix, not a retrieval change: one held-out query has no
+> relevant document, and it was contributing 0 to the numerator and 1 to the denominator of every
+> ranking metric. That capped MRR, recall@k and nDCG at 33/34 = 0.9706. Unanswerable queries are
+> now excluded from the denominator, which is also `trec_eval`'s convention. Every held-out metric
+> below is therefore the old one multiplied by 34/33.
+>
+> Superseded, retained for traceability: ~~semantic MRR 0.94, hybrid 0.85, hybrid+rerank 0.90,
+> keyword 0.73; R@5 97% for semantic/hybrid/+rerank~~ — denominator included an unscoreable query.
 
 ```
 Retrieval eval — 64 queries over 17 docs
 * Dataset 2026-07-26.2 (queries 787aeddbf260, corpus 29789f602b8a)
 * Split: 30 tuning (weight chosen here) / 34 held-out (reported below)
-* Chunking: semantic chunker
+* Scored on 33 of 34 held-out queries — 1 has no relevant document and is excluded from every
+  ranking metric (measured separately below)
 * Embedding: Xenova/all-MiniLM-L6-v2 (384-dim)
 * Reranker: Xenova/bge-reranker-base
-* Initial retrieval: 10 chunks per strategy
-* Reranker input: Top 10 blended chunks
+* Initial retrieval: keyword 17 / semantic 17 chunks (production CANDIDATE_LIMIT, clamped to corpus)
 ────────────────────────────────────────────────────────────────────────────────
 Strategy          MRR   R@1   R@3   R@5   P@3   nDCG@5
 ────────────────────────────────────────────────────────────────────────────────
-keyword          0.73    60%    76%    79%    28%    72%
-semantic         0.94    85%    97%    97%    36%    95%
-hybrid           0.85    71%    94%    97%    35%    88%
-hybrid+rerank    0.90    81%    94%    97%    35%    92%
+keyword          0.75    62%    79%    82%    29%    74%
+semantic         0.97    88%   100%   100%    37%    98%
+hybrid           0.89    76%    97%   100%    36%    92%
+hybrid+rerank    0.93    83%    97%   100%    36%    95%
+ceiling          1.00    94%   100%   100%    37%   100%
 ────────────────────────────────────────────────────────────────────────────────
-held-out hybrid, with 95% bootstrap intervals:
-  MRR  85% [75%–94%]     R@1  71% [56%–84%]     R@5  97% [91%–100%]
-  (intervals this wide on a set this size mean small gaps are not rankings)
+as % of attainable ceiling:
+keyword          75%    66%    79%    82%    78%    74%
+semantic         97%    94%   100%   100%   100%    98%
+hybrid           89%    81%    97%   100%    97%    92%
+hybrid+rerank    93%    89%    97%   100%    97%    95%
 ────────────────────────────────────────────────────────────────────────────────
-by query kind (R@1 / MRR), whole set:
+95% PAIRED bootstrap on the per-query MRR difference (held-out):
+  Δ MRR semantic − keyword          +0.22 [ 0.11, 0.35]   excludes zero: yes   SIGNIFICANT
+  Δ MRR hybrid+rerank − keyword     +0.18 [ 0.08, 0.28]   excludes zero: yes   SIGNIFICANT
+  Δ MRR hybrid − keyword            +0.14 [ 0.07, 0.23]   excludes zero: yes   SIGNIFICANT
+  Δ MRR semantic − hybrid           +0.08 [ 0.01, 0.16]   excludes zero: yes   SIGNIFICANT
+  Δ MRR semantic − hybrid+rerank    +0.04 [-0.03, 0.13]   excludes zero: no    not significant
+  Δ MRR hybrid+rerank − hybrid      +0.03 [-0.03, 0.10]   excludes zero: no    not significant
+────────────────────────────────────────────────────────────────────────────────
+by query kind (R@1 / MRR), HELD-OUT — this is what the gate scores:
             keyword        semantic       hybrid         hybrid+rerank
-exact            92% / 0.98     86% / 0.94     95% / 1.00     92% / 0.98
-paraphrase       58% / 0.69     84% / 0.92     69% / 0.83     80% / 0.88
+exact            87% / 0.97     93% / 1.00     93% / 1.00     93% / 1.00
+paraphrase       42% / 0.57     83% / 0.94     61% / 0.80     75% / 0.86
 ────────────────────────────────────────────────────────────────────────────────
-hybrid weight sweep on the TUNING split (keyword weight → MRR), best = 0.55:
-0.00:0.93   0.05:0.94   0.10:0.96   0.15:0.96   0.20:0.97   0.25:0.97   0.30:0.98   0.35:0.98   0.40:0.98   0.45:0.98   0.50:0.98   0.55:0.98*  0.60:0.98   0.65:0.98   0.70:0.98   0.75:0.98   0.80:0.98   0.85:0.96   0.90:0.95   0.95:0.95   1.00:0.95 
+rejection — 1 unanswerable / 33 answerable held-out queries:
+  keyword   unanswerable top 2.882   answerable min 0.053 / med 5.193 / max 11.338  NOT separable
+  semantic  unanswerable top 0.094   answerable min 0.196 / med 0.477 / max 0.723   separable
+  hybrid    not measurable — min-max normalisation puts every query's top at 1.000
 ────────────────────────────────────────────────────────────────────────────────
-Reranker Regressions (4 queries) — first two shown:
-  Query: "queries hang when too many users connect at once"
-  Expected: db-connection-pool.md
-  Ranks: Hybrid #2 -> Reranked #3
-  Scores: KW=2.91 / SM=0.56 / Rerank=-4.53
-  Analysis: Reranker preferred another document more
-
-  Query: "memory issues and stalls"
-  Expected: db-connection-pool.md
-  Ranks: Hybrid #1 -> Reranked #2
-  Analysis: Reranker preferred another document more
-
-  …
-────────────────────────────────────────────────────────────────────────────────
-quality gate:
-  PASS  keyword R@1 on exact:  92% (floor  50%)
-  PASS  semantic R@1 on paraphrase:  84% (floor  70%)
-  PASS  semantic MRR overall:  94% (floor  85%)
-  PASS  hybrid R@5 overall:  97% (floor  90%)
-  PASS  hybrid best on exact queries:  95% (floor  85%)
-  PASS  hybrid does not collapse on paraphrase:  83% (floor  75%)
+quality gate (ALL rows now scored on held-out data):
+  PASS  keyword R@1 on exact:  87% (floor  50%)
+  PASS  semantic R@1 on paraphrase:  83% (floor  70%)
+  PASS  semantic MRR overall:  97% (floor  85%)
+  PASS  hybrid R@5 overall: 100% (floor  90%)
+  PASS  hybrid best on exact queries:  93% (floor  85%)
+  PASS  hybrid does not collapse on paraphrase:  80% (floor  75%)
 ────────────────────────────────────────────────────────────────────────────────
 
 Quality gate passed. ✓
 ```
 
-> **Reranker caveat — now resolved.** The previously captured `hybrid+rerank` run used an earlier
-> text-classification pipeline wrapper that did not pass query/passage pairs correctly, and
-> reported MRR **0.73** with 13 regressions. The code now uses `AutoTokenizer` +
-> `AutoModelForSequenceClassification` with `text_pair` and full chunk content. The numbers above
-> are the re-run: MRR **0.90** (R@1 71% → 81%), regressions 13 → 4. The broken wrapper was
-> emitting a constant `Rerank=1.00` for every candidate, so ordering was effectively arbitrary —
-> the old row was an artifact, not a measurement.
+**Every metric now prints its attainable ceiling.** This is not decoration. `R@5 = 100%` and
+`P@3 = 37%` look like a triumph and a disaster respectively; they are the same thing — 100% of what
+the labels permit. Label density caps P@3 at 37% because almost every query has one relevant
+document, and caps R@1 at 94% because four have two. A score without its ceiling is unreadable in
+both directions.
+
+**This benchmark is saturated and should not be used to choose between configurations.** R@5 is at
+100% of ceiling for semantic, hybrid and hybrid+rerank simultaneously, and the bootstrap interval
+on hybrid R@5 is [100%, 100%] — a zero-width confidence interval. See §1b for a corpus that can
+still discriminate.
+
+### What changed, and what did not survive
+
+**1. The significance claim was wrong, in this repository's own disfavour.**
+
+> Superseded: ~~"intervals this wide on a set this size mean small gaps are not rankings"~~ and
+> ~~"treat differences of a few points as noise and do not rank configurations by them"~~.
+
+Marginal intervals overlap — semantic MRR 97% [92–100] against hybrid 89% [81–96] — but that does
+not imply the difference is insignificant. Both strategies are scored on the *same* queries, so the
+comparison is paired, and the paired interval removes the per-query variance the marginal ones
+keep. The paired result is **+0.08 [0.01, 0.16], excluding zero**. Blending a weak keyword leg into
+a strong semantic one **measurably** hurts retrieval on this corpus. The old framing was cautious
+to the point of being wrong.
+
+**2. "Hybrid is the best configuration for exact-match queries" did not survive the gate fix.**
+
+> Superseded: ~~exact-query table showing hybrid 95% / 1.00 against semantic 86% / 0.94~~ — computed
+> over tune + test, including the 30 queries that selected hybrid's own blend weight.
+
+Four of six gate rows were scored on tune + test. Pointed at held-out data, exact queries are a
+**three-way tie**: semantic, hybrid and hybrid+rerank all score R@1 93% / MRR 1.00. Hybrid is not
+best on exact queries; it is tied, and the apparent advantage came from the queries that tuned it.
+The gate row named `hybrid best on exact queries` still passes but no longer tests what its name
+claims.
+
+**3. Reranking's benefit is not statistically supported here.**
+
+> Superseded: ~~"Reranking therefore does help hybrid (0.85 → 0.90)"~~ — stated as a result on the
+> strength of a point estimate alone.
+
+The paired interval is **+0.03 [−0.03, 0.10], including zero**. The point estimate is positive at
+every configuration tested, so the reranker may well help, but 33 queries cannot establish it.
+Reranking remains off by default.
+
+**4. The eval was measuring a configuration that never shipped.**
+
+The harness retrieved the keyword leg at every chunk in the corpus and the semantic leg at
+`LIMIT 10`, while production retrieves both at `CANDIDATE_LIMIT = 30`. That asymmetry is not
+neutral — `blendHybrid` min-max normalises each leg independently, and a deeper list has a lower
+minimum, which compresses its top toward 1.0. Measured directly: semantic's normalised runner-up
+rises from 0.565 at depth 10 to 0.659 at depth 17. The harness now mirrors production. Held-out
+hybrid moved 0.88 → 0.89; the mechanism is real and the effect at this corpus size is not.
+
+**5. `DEFAULT_HYBRID_WEIGHT` did not match the sweep.** The constant read 0.4 while the sweep had
+selected 0.55, so production served a blend no published number described. Re-selected at **0.45**
+on the tuning split at production depth.
+
+**6. The metric implementations are now verified.** `recallAt`, `mrr`, `precisionAt` and `ndcgAt`
+were from-scratch and untested while gating CI. They are cross-checked against `pytrec_eval` (NIST
+`trec_eval`) on four synthetic rankers × six measures, agreeing to **machine epsilon with no
+correction** ([CI 30963101701](https://github.com/JCHETAN26/IndexFlow/actions/runs/30963101701)), and
+pinned by 20 unit tests asserting hand-derived exact values.
+
+**Still true, and unchanged:** the selection criterion is the mean of per-kind MRR rather than
+pooled MRR; the `blendHybrid` lowest-hit wart is real and immaterial here; the sweep plateau is
+flat, which is itself the finding. 30 of the 64 queries were added in the IF-3 pass with minimal
+lexical overlap, so this benchmark is deliberately harder than the original and tilted toward
+semantic retrieval.
+
+---
+
+## 1b. Retrieval quality at scale (BEIR)
+
+Everything in §1 is measured on 17 documents, where retrieval is a 17-way classification problem.
+These runs use the same chunker, embeddings, Elasticsearch BM25 and blend against public corpora
+with third-party relevance judgements, so the numbers can be checked against published baselines by
+someone who does not trust this repository.
+
+```
+COMMAND:  BEIR_SUBSET=scifact  pnpm --filter @indexflow/web eval:scale
+RUN:      2026-08-05 (CI run 30978548207) — 5,183 docs, 300 held-out queries, 815s
+COMMAND:  BEIR_SUBSET=nfcorpus pnpm --filter @indexflow/web eval:scale
+RUN:      2026-08-05 (CI run 30982743336) — 3,633 docs, 323 held-out queries, 623s
+```
+
+**SciFact** — 5,183 documents, 300 held-out queries, binary relevance, 1.13 relevant per query:
+
+```
+Strategy         MRR    R@1     R@5     R@10    P@3     nDCG@10
+keyword        0.62    50.8%   71.3%   76.2%   23.7%   64.6%
+semantic       0.61    49.4%   71.4%   79.8%   23.0%   64.8%
+hybrid         0.68    56.4%   77.7%   83.1%   25.2%   70.7%
+ceiling        1.00    95.5%  100.0%  100.0%   36.9%  100.0%
+
+  Δ MRR hybrid − keyword     +0.056 [0.033, 0.081]   SIGNIFICANT
+  Δ MRR hybrid − semantic    +0.071 [0.043, 0.099]   SIGNIFICANT
+  Δ MRR keyword − semantic   +0.015 [-0.024, 0.052]  not significant
+```
+
+**NFCorpus** — 3,633 documents, 323 held-out queries, graded relevance, 38 relevant per query:
+
+```
+Strategy         MRR    R@1     R@6*    R@10    P@3     nDCG@10
+keyword        0.50     5.7%   12.7%   14.8%   32.7%   29.9%
+semantic       0.51     4.2%   12.3%   14.8%   34.2%   30.8%
+hybrid         0.53     5.1%   14.4%   16.4%   38.1%   33.2%
+ceiling        1.00    17.9%   50.2%   61.5%   92.9%  100.0%
+   * R@6 = the k that actually reaches the generator
+
+  Δ MRR hybrid − keyword     +0.032 [0.002, 0.062]   SIGNIFICANT
+  Δ MRR hybrid − semantic    +0.023 [0.004, 0.044]   SIGNIFICANT
+  Δ MRR semantic − keyword   +0.008 [-0.031, 0.046]  not significant
+```
+
+### External anchor — the pipeline reproduces published baselines
+
+| corpus | metric | ours | published | delta |
+|---|---|---|---|---|
+| SciFact | BM25 nDCG@10 | **0.646** | ≈0.665 (BEIR, Thakur et al. 2021) | −0.019 |
+| SciFact | all-MiniLM-L6-v2 nDCG@10 | **0.648** | ≈0.645 (sentence-transformers) | +0.003 |
+| NFCorpus | BM25 nDCG@10 | **0.299** | ≈0.325 (BEIR) | −0.026 |
+
+Chunking, indexing, embedding, scoring, metric computation and document-level deduplication
+together reproduce the literature to within about 0.02. Our hybrid configuration scores **0.707 on
+SciFact, above published BM25 (0.665)**, from a 22M-parameter embedding model with no reranker.
+
+The published figures above are quoted from the BEIR literature and have **not** been independently
+re-derived in this repository; only our own column is a measurement.
+
+### "Hybrid does not beat both single strategies" was over-generalised
+
+> Superseded: ~~"Blending a weak keyword leg into a strong semantic one costs more than it returns"~~
+> as a general claim. It is true *of this corpus*, and false on both public corpora tested.
+
+| corpus | keyword vs semantic | hybrid vs both |
+|---|---|---|
+| in-domain (17 docs) | semantic **+0.22**, dominant | **−0.08, significantly worse** |
+| SciFact (5,183 docs) | +0.015, not significant | **+0.056 / +0.071, significant** |
+| NFCorpus (3,633 docs) | +0.008, not significant | **+0.032 / +0.023, significant** |
+
+**Hybrid is worth running when neither leg dominates, and is actively harmful when one does.** On
+the in-domain corpus semantic leads keyword by 0.22 and the blend can only drag it down. On both
+public corpora the legs are statistically tied and disagree usefully, so blending captures what each
+misses. Two independent confirmations, both pre-registered before the runs.
+
+### Depth, not ranking, is what limits recall
+
+```
+NFCorpus — is CANDIDATE_LIMIT=30 the binding constraint?
+  keyword    R@10 14.8%   R@30 18.0%   R@100 22.8%
+  semantic   R@10 14.8%   R@30 19.8%   R@100 28.0%
+  hybrid     R@10 16.4%   R@30 22.8%   R@100 31.2%
+  candidate pool ceiling: 24.3% at depth 30, 32.6% at depth 100
+```
+
+The pool ceiling is the share of relevant documents present in *either* leg's candidates — recall
+above it is unreachable, because no reranker can promote a document that was never retrieved.
+Hybrid's R@30 of 22.8% against a 24.3% pool ceiling means that **at k=30, ranking captures 94% of
+what is reachable**, leaving at most 1.5 points for any reranker.
+
+**That does not transfer to the k that ships, and raising `CANDIDATE_LIMIT` does not help either.**
+Sweeping the depth — each row a truncation of the same depth-100 retrieval, so each is exactly what
+retrieving at that depth returns:
+
+```
+  depth   MRR     R@6      R@10     nDCG@10   pool ceiling
+  10      0.53     13.5%    15.7%    31.7%     17.7%
+  20      0.53     14.1%    16.4%    32.9%     22.0%
+  30      0.53     14.4%    16.4%    33.2%     24.3%   <- production
+  50      0.53     14.1%    16.9%    33.7%     27.7%
+  100     0.54     14.1%    16.8%    33.9%     32.6%
+```
+
+Going 30 → 100 raises the pool ceiling by a third (24.3% → 32.6%) and buys **nothing at the k that
+reaches the generator**: R@6 goes 14.4% → 14.1%, R@10 gains 0.4 points, nDCG@10 gains 0.7. The
+extra candidates are reachable but never ranked high enough to be consumed. **`CANDIDATE_LIMIT`
+stays at 30** — a deeper pool costs latency in both legs and in the blend and returns nothing
+measurable.
+
+> **Correction.** An earlier version of this section concluded "the lever for recall on a densely-
+> labelled corpus is `CANDIDATE_LIMIT`, not a better ranker." The depth sweep shows that is wrong
+> at consumable *k*. It was inferred from R@30 and R@100 — cutoffs nobody consumes — and does not
+> hold at k=6 or k=10.
 >
-> Reranking therefore does help hybrid (0.85 → 0.90), and recovers most of hybrid's paraphrase
-> deficit (0.83 → 0.88). It still does not overtake semantic alone at 0.94, so the conclusion
-> below is unaffected. It remains off by default.
+> The corrected picture: at **k=30** ranking is nearly optimal and depth is the only lever, but
+> that lever moves nothing a user sees. At **k=6** there is real headroom for better *ordering*
+> within the pool already retrieved — now measured, below.
 
-### What changed, and why the headline claim did not survive
+### How much could better ranking buy? Measured.
 
-**Hybrid does not beat both single strategies on held-out data.** Semantic alone scores MRR
-**0.94**; hybrid scores **0.85**; keyword **0.73**. The by-kind breakdown shows the mechanism:
+Oracle rerank = the best recall@k achievable by perfectly reordering the candidate pool already
+retrieved at depth 30. The gap to it is exactly what a perfect reranker would win; anything beyond
+it needs better candidates, not better ordering.
 
-| Query kind | keyword | semantic | hybrid |
+```
+  k     hybrid R@k    oracle rerank   headroom    label ceiling
+  6      14.4%         21.7%          +7.3pp       50.2%
+  10     16.4%         23.5%          +7.0pp       61.5%
+  30     22.8%         24.3%          +1.4pp       84.9%
+```
+
+**At the k that ships, perfect reordering is worth +7.3 points — a 51% relative gain — against
++1.4 at k=30.** The earlier "a reranker can add at most 1.5 points" bound was measured at a cut-off
+nobody consumes and understated the opportunity by a factor of five.
+
+This is the clearest statement of where retrieval quality currently stands:
+
+| lever | measured value at k=6 |
+|---|---|
+| deeper retrieval (`CANDIDATE_LIMIT` 30 → 100) | **0.0pp** (R@6 goes 14.4% → 14.1%) |
+| perfect reordering of the existing pool | **+7.3pp** |
+| everything above that (21.7% → 50.2%) | needs better candidates — and depth is not how to get them |
+
+Reranking is therefore the live opportunity and depth is not, which is the opposite of what this
+file said one revision ago. Note the ceiling on the claim: +7.3pp is what a *perfect* reranker
+would win, and the cross-encoder currently implemented is not perfect — its in-domain benefit is
+not statistically significant (§1), and it has never been measured at scale.
+
+### Graded relevance is worth almost nothing here
+
+| strategy | graded nDCG@10 | binary nDCG@10 | delta |
 |---|---|---|---|
-| exact (error codes, identifiers) | 0.98 | 0.94 | **1.00** |
-| paraphrase (no term overlap) | 0.69 | **0.92** | 0.83 |
+| keyword | 29.9% | 29.9% | +0.03pp |
+| semantic | 30.8% | 31.1% | −0.30pp |
+| hybrid | 33.2% | 33.3% | −0.07pp |
 
-Hybrid is the best configuration for exact-match queries and the *second* best for paraphrases.
-Because the paraphrase loss (0.92 → 0.83) is larger than the exact gain (0.94 → 1.00), pooling
-them leaves semantic ahead. Blending a weak keyword leg into a strong semantic one costs more
-than it returns on this corpus.
-
-Three things were ruled out before accepting that conclusion:
-
-1. **The selection criterion.** Pooled MRR let the larger query kind decide the weight — the
-   tuning split holds 17 exact and 13 paraphrase queries, which structurally favours
-   keyword-heavy weights. Replaced with the mean of per-kind MRR, and the tie broken at the
-   centre of the maximising plateau rather than at a fixed preferred value. Held-out hybrid moved
-   0.86 → 0.85: the criterion was genuinely defective, and fixing it changed nothing. That the
-   result survives a better rule is the strongest evidence it is real.
-2. **The score-blending wart** (`blendHybrid` discards each leg's lowest-scoring hit, because
-   min-max normalisation sends it to exactly 0). Patched experimentally: held-out hybrid was
-   unchanged at 0.86. Real bug, immaterial here.
-3. **A flat sweep.** The 0.1 grid was flat across 0.3–0.8, so an arbitrary tie-break was choosing
-   the weight. Refined to 0.05 steps; the plateau is still flat, which is itself the finding —
-   hybrid is insensitive to weight on this data.
-
-**Disclosure about the dataset.** 30 of the 64 queries were added in this pass, and the added
-paraphrases were deliberately written with minimal lexical overlap with their source documents.
-That is a harder test than the original set and it shifts the benchmark toward semantic retrieval.
-It is a defensible choice — paraphrase handling is the reason to run vector search at all — but
-anyone comparing these numbers to the earlier ones should know the benchmark got harder, not just
-more honest.
-
-**The quality gate changed shape.** It previously asserted "hybrid MRR ≥ best single strategy".
-That assertion was removed rather than relaxed, because held-out data shows it is false; a gate
-encoding it would make CI enforce a fiction. It now asserts what hybrid demonstrably is — the
-strongest configuration on exact-match queries, without collapsing on paraphrases — plus a floor
-on semantic, which is now the headline retriever.
-
-**Confidence intervals are wide.** MRR 0.85 [0.75–0.94] on 34 queries. The semantic/hybrid gap is
-real but the interval overlaps a lot of the range; treat differences of a few points as noise and
-do not rank configurations by them.
+NFCorpus was chosen partly because graded judgments should make nDCG carry information binary
+labels cannot. Measured, they do not — grade-2 judgments are 4.7% of the total, too sparse to move
+a ranking. What makes nDCG informative here is **label density, not grading**: with ~38 relevant
+documents per query nDCG@10 separates the three strategies by 3.3 points, while MRR separates them
+by 0.03 and cannot distinguish them at all.
 
 ## 2. Permission leaks
 
@@ -440,56 +628,146 @@ access (fetching a document by URL); that gap is covered separately by `acl:dao`
 ## 6. Latency & scale
 
 ```
-COMMAND:  BENCH_SCALES=1000,10000,50000,100000 BENCH_QUERIES=200 pnpm --filter @indexflow/web bench:latency
-STARTED:  2026-07-26T00:59:29Z
-FINISHED: 2026-07-26T01:00:33Z
+COMMAND:  BENCH_SCALES=1000,10000,50000 BENCH_QUERIES=150 BENCH_REPEATS=3 pnpm ... bench:latency
+RUN:      2026-08-05 (ubuntu-latest, CI 31046256117)
 EXIT:     0
 ```
 
+> **The previous capture of this section was an artifact and is withdrawn.** It reported
+> ~~keyword p50 9.1–10.6 ms, semantic 2.4–2.9 ms, hybrid 8.6–10.2 ms~~ across 1k–100k chunks, with
+> **hybrid p50 *below* keyword p50 at three of four scales** — impossible, since hybrid awaits both
+> legs. The prose even asserted the opposite of its own table.
+>
+> Cause: the benchmark ran keyword, then semantic, then hybrid in fixed order **on the same query
+> and vector every iteration.** By the time hybrid ran, Elasticsearch had just served that exact
+> query and Postgres had just executed that exact vector scan, so both of hybrid's legs were
+> answered from caches the two standalone measurements had filled. Hybrid was timed warm against
+> two cold competitors.
+>
+> Fixed: every (trial, strategy) pair now gets its own query, strategy order is shuffled per trial,
+> and the bench prints a loud warning if hybrid p50 ever lands below the slower leg again. No
+> warning fires below. The corrected run covers 1k–50k rather than 1k–100k.
+
 ```
-scales: 1000, 10000, 50000, 100000 · queries/scale: 200 (+20 warmup) · dim 384 · k 10
+scale     strategy   p50    p95    p99   mean   per-run p50 (3 runs)   ANN recall@10
+1,000     keyword    5.7   12.3   16.8    6.8   9.0 / 5.3 / 5.2        100.0%
+          semantic   1.5    2.5    4.0    1.6   1.8 / 1.3 / 1.4
+          hybrid     5.9   13.1   23.1    7.1   9.1 / 5.4 / 5.3
+10,000    keyword    5.8    7.6   10.0    6.0   5.7 / 5.9 / 5.7        100.0%
+          semantic   1.5    1.9    2.3    1.5   1.4 / 1.5 / 1.5
+          hybrid     5.9    7.9   11.0    6.0   5.9 / 6.0 / 5.7
+50,000    keyword    6.9    9.4   10.9    6.9   7.4 / 6.7 / 6.7        100.0%
+          semantic   1.3    1.7    3.0    1.3   1.4 / 1.2 / 1.2
+          hybrid     6.9   10.1   12.7    7.0   7.2 / 6.7 / 6.6
 
-── scale 1,000 chunks ──
-  loaded: pg 20,532/s · es 930/s · hnsw build 193ms
-  keyword   p50     9.4  p95    86.7  p99   140.7  mean    17.1  (ms)
-  semantic  p50     2.9  p95     5.9  p99     7.5  mean     3.3  (ms)
-  hybrid    p50     9.3  p95    94.7  p99   110.2  mean    16.5  (ms)
-
-── scale 10,000 chunks ──
-  loaded: pg 10,806/s · es 4,545/s · hnsw build 1502.6ms
-  keyword   p50     9.1  p95    18.3  p99    49.4  mean    10.7  (ms)
-  semantic  p50     2.4  p95     4.8  p99     7.3  mean     2.7  (ms)
-  hybrid    p50     8.6  p95    18.5  p99    29.7  mean      10  (ms)
-
-── scale 50,000 chunks ──
-  loaded: pg 31,085/s · es 11,630/s · hnsw build 5254.9ms
-  keyword   p50    10.6  p95    20.7  p99    39.3  mean    12.1  (ms)
-  semantic  p50     2.6  p95     5.2  p99      11  mean     3.1  (ms)
-  hybrid    p50    10.2  p95    17.3  p99    28.6  mean      11  (ms)
-
-── scale 100,000 chunks ──
-  loaded: pg 58,013/s · es 16,168/s · hnsw build 13136.2ms
-  keyword   p50    10.4  p95    19.2  p99    25.3  mean      11  (ms)
-  semantic  p50     2.4  p95     3.8  p99     6.6  mean     2.6  (ms)
-  hybrid    p50     9.4  p95    17.3  p99    27.7  mean    10.1  (ms)
+HNSW build: 37.7 ms @1k · 586.7 ms @10k · 4,615 ms @50k · 125,200 ms @196k (§1b)
 ```
 
-p50 is essentially flat from 1k to 100k chunks on every strategy — the pgvector HNSW index and the
-Elasticsearch inverted index both do their job. The semantic leg is consistently the faster one
-(2.4–2.9 ms p50, in-process to the database); the keyword leg (9.1–10.6 ms p50) dominates hybrid
-latency (8.6–10.2 ms p50) because hybrid waits on both. The worst tail is at the *smallest* scale (p95 86.7 ms
-keyword at 1k, vs 19.2 ms at 100k), which is cold-cache and host noise, not a scaling effect.
+Hybrid now sits at or just above the slower leg at every scale — the only physically possible
+arrangement, and exactly `max(keyword, semantic) + blend`.
 
-HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s at 100k.
+**The Elasticsearch hop is the whole hybrid latency budget.** Keyword 5.7–6.9 ms against
+in-process pgvector's 1.3–1.5 ms. **Semantic latency is flat and slightly decreasing** across a 50×
+corpus, so HNSW is genuinely sublinear.
+
+**Run-to-run spread earns its place immediately.** At 1k, keyword per-run p50 was 9.0 / 5.3 / 5.2 —
+the first run 70% high. A single run would have published 9 ms and invited a story about
+small-index overhead. It is warmup, and only three repeats make that visible.
+
+**ANN recall@10 is 100% at every scale**, so the speed is not bought with recall. Independently
+confirmed on **real** embeddings over 195,980 chunks in §1b, also 100.0% — an earlier draft of this
+file cautioned that synthetic uniform vectors are the easy case for HNSW and real clustered
+embeddings would score lower. Measured, they do not.
+
+---
+
+## 6b. Ingestion throughput, end to end
+
+```
+COMMAND:  INGEST_DOCS=40 INGEST_CONCURRENCY=1,2,4,8 pnpm --filter @indexflow/web bench:ingest
+RUN:      2026-08-07 (ubuntu-latest, CI 31154323242) — 4 logical CPUs
+EXIT:     0
+```
+
+> **This is the number §6 never had.** "Index throughput" above is *bulk-load* speed — batched
+> writes straight into Postgres and Elasticsearch. No upload uses that path. Real ingestion runs
+> MinIO download → extract → chunk → embed → Postgres transaction → outbox → ES projection, through
+> BullMQ. The bulk figure overstates what an upload achieves by roughly **three orders of
+> magnitude**. It was correctly labelled, but it answered a question nobody asks.
+
+```
+stage breakdown (one document, 3 chunks, model warm):
+  postgres txn + outbox + ES projection    952.6 ms    89.5%
+  embed                                    106.0 ms    10.0%
+  minio download                             5.4 ms     0.5%
+  chunk                                      0.3 ms     0.0%
+  extract                                    0.1 ms     0.0%
+  TOTAL                                   1064.3 ms
+
+throughput vs worker concurrency:
+  concurrency   docs/s    wall (s)   per-doc p50 (ms)   speedup
+  1               0.99       40.3               1015    1.00x
+  2               1.99       20.1               1016    2.00x
+  4               3.99       10.0               1020    4.02x
+  8               4.46        9.0               1925    4.49x
+```
+
+**The bottleneck is the Elasticsearch refresh, not embedding.** With the model warm, embedding
+three chunks costs 106 ms; the write path costs 952 ms — nine times more. The mechanism is in the
+code, not inferred: `lib/outbox.ts:171` forces an immediate ES refresh on the delete, and
+`lib/outbox.ts:172` indexes with `refresh: "wait_for"`, which blocks until the next refresh cycle.
+Elasticsearch's default `index.refresh_interval` is 1 second, which is the 952 ms almost exactly.
+
+That is a **deliberate guarantee**, stated in `lib/ingest.ts`: the document is searchable the moment
+the worker reports done. This measurement prices it at ~1 second per document, 90% of ingestion
+cost. Two ways to spend it differently — dropping the likely-redundant `refresh: true` on the
+delete, or batching projections across documents — both touch the cross-store consistency
+properties §3c exists to protect, so neither is taken here.
+
+**Scaling is linear to the core count** (4.02× at concurrency 4) then flat (4.49× at 8) with
+per-document latency doubling. Saturation is **~4.5 documents/second on 4 cores**, about 1 doc/s
+per core. The clean scaling to 4 is itself evidence for the diagnosis: 90% of the time is spent
+*waiting* on Elasticsearch, and waiting parallelises freely; past the core count the 10% that is
+CPU-bound embedding starts contending.
+
+**What this implies for re-indexing.** For a 196k-chunk corpus, rebuilding the HNSW index takes
+~2 minutes (§1b), but re-ingesting from source takes **~4.2 hours** on one 4-core worker. The two
+are not interchangeable: an ACL change triggers projection, which is cheap, while an
+embedding-model change triggers full re-ingestion, which is hours. **Changing the embedding model
+is the expensive operation in this system.**
 
 ---
 
 ## What these numbers do not say
 
-- **This is local-fixture evaluation, not production traffic.** 34 queries over 17 documents for
-  retrieval; 32 questions for generation. Retrieval has a proper tuning/held-out split. Generation
-  remains whole-set. Its faithfulness score is human-calibrated (κ = 1.00); its relevance,
-  citation, and refusal scores remain LLM-judged, with citation known to be lenient.
+- **The in-domain benchmark (§1) is saturated and cannot rank configurations.** R@5 sits at 100%
+  of its attainable ceiling for three strategies at once, and the bootstrap interval on hybrid R@5
+  is [100%, 100%]. Use §1b for anything comparative.
+- **The in-domain corpus is 17 single-chunk documents.** Every document is 37–54 words against a
+  180-word chunk target, so "retrieval" there is a 17-way document classification problem and
+  `dedupDocs` is a no-op. This is the binding constraint on every §1 number.
+- **§1b is out of domain.** SciFact is scientific claim verification and NFCorpus is nutrition
+  literature. They establish that the retrieval stack is competitive against public baselines —
+  they say nothing about permission-aware workspace search, which is the product.
+- **Generation quality is unmeasured at scale.** The 20 answerable + 12 unanswerable questions run
+  against 17 documents. Nothing measures end-to-end answer quality on a realistic corpus, and that
+  is what a user actually experiences. Faithfulness is human-calibrated (κ = 1.00); relevance,
+  citation and refusal remain LLM-judged, with citation known to be lenient.
+- **The rejection signal rests on n = 1.** One held-out query has no relevant document, and there
+  are none in the tuning split, so no rejection rate is estimable and no threshold can be
+  calibrated without fitting the test set. §1 reports score separation only.
+- **The relevance labels have never been audited.** The LLM judges were calibrated against a blind
+  human (§4); the in-domain relevance judgments themselves rest on one person's unaudited opinion
+  about which document answers which query. BEIR's judgments are third-party, which is part of why
+  §1b exists.
+- **The relevance labels are still unaudited.** `labels:export` generates a blind 20-pair sheet
+  (10 currently-labelled-relevant, 10 highest-overlap currently-labelled-irrelevant) and
+  `labels:score` reports agreement and Cohen's kappa, but **no human has labelled it yet**. Until
+  then every retrieval number here rests on one person's unaudited judgment, and under-labelling
+  in particular would deflate recall for every strategy equally — invisible in any comparison,
+  wrong in absolute terms.
+- **The permission filter's effect on ranking quality is unmeasured.** The ACL is tested for leaks
+  (§2, §3, §5), never for what removing candidates does to result quality for a restricted viewer.
 - **The latency benchmark uses synthetic data**: random 384-dim unit vectors and text drawn from a
   fixed vocabulary, in an isolated `bench_chunks` table. It measures **latency, not quality**. BM25
   latency is real (real text, real index); vector *relevance* at those scales is not measured.
@@ -501,3 +779,12 @@ HNSW build time is the cost that does grow with scale: 193 ms at 1k → 13.1 s a
   regressed", not "meets an externally meaningful bar".
 - **The adversarial benchmark's captured `Average input tokens: 0`** is a historical harness bug,
   not a measurement. Re-run §5 before quoting input-token telemetry.
+- **No reranker measurement at scale.** §1b omits `hybrid+rerank` deliberately — roughly 11k
+  cross-encoder pairs would dominate the run. Its in-domain benefit is not statistically
+  significant (§1), and the NFCorpus pool-ceiling analysis bounds what it could contribute at
+  depth 30 to 1.5 percentage points.
+- **Published BEIR baselines are quoted, not re-derived.** Only our own column in §1b is a
+  measurement taken in this repository.
+
+**Full method, hypotheses, pre-registered predictions and the experiments that changed nothing are
+in [`docs/eval/WORKLOG.md`](../../../docs/eval/WORKLOG.md), in chronological order.**

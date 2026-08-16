@@ -13,6 +13,10 @@
     "seed": "tsx --env-file=.env scripts/seed.ts",
     "eval": "tsx --env-file=.env eval/run.ts",
     "eval:rag": "tsx --env-file=.env eval/rag-run.ts",
+    "eval:depth": "tsx --env-file=.env eval/depth-matrix.ts",
+    "eval:scale": "tsx --env-file=.env eval/scale-run.ts",
+    "eval:trec-export": "tsx eval/trec-export.ts",
+    "eval:crosscheck": "tsx eval/trec-export.ts && python3 eval/crosscheck.py .evalrun/trec",
     "eval:adversarial": "tsx --env-file=.env eval/adversarial-run.ts",
     "acl:leak": "tsx --env-file=.env eval/acl-leak.ts",
     "acl:dao": "tsx --env-file=.env eval/dao-check.ts",
@@ -32,7 +36,12 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "judge:export": "tsx --env-file=.env eval/export-labels.ts",
-    "judge:calibrate": "tsx --env-file=.env eval/calibrate-judges.ts"
+    "judge:calibrate": "tsx --env-file=.env eval/calibrate-judges.ts",
+    "eval:embed-shard": "tsx --env-file=.env eval/embed-shard.ts",
+    "eval:scale-curve": "tsx --env-file=.env eval/scale-curve.ts",
+    "bench:ingest": "tsx --env-file=.env bench/ingest-bench.ts",
+    "labels:export": "tsx eval/label-audit.ts export",
+    "labels:score": "tsx eval/label-audit.ts score"
   },
   "prisma": {
     "schema": "prisma/schema.prisma"

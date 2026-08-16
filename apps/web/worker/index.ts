@@ -29,7 +29,10 @@ const worker = new Worker<IngestionJobData>(
     });
     console.log(`[worker] indexed ${documentId} (${chunkCount} chunks)`);
   },
-  { connection, concurrency: 2 },
+  // Configurable so the ingestion benchmark can measure throughput against worker count, and so
+  // a deployment can match concurrency to its core count. Embedding is CPU-bound and in-process,
+  // so raising this past the core count buys nothing — see bench/ingest-bench.ts.
+  { connection, concurrency: Number(process.env.WORKER_CONCURRENCY ?? 2) },
 );
 
 worker.on("failed", async (job, err) => {

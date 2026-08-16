@@ -20,6 +20,24 @@ import { embed, toVectorLiteral } from "../lib/embed";
 import { blendHybrid, type Scored } from "../lib/hybrid";
 import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsChunk } from "../lib/es";
 import { rerank } from "../lib/rerank";
+import { CANDIDATE_LIMIT } from "../lib/retrieve";
+import {
+  bootstrapCI,
+  bootstrapDelta,
+  ceilingFor,
+  dedupDocs,
+  judgedCount,
+  mrr,
+  ndcgAt,
+  precisionAt,
+  hitRateAt,
+  ranksForQuery,
+  recallAt,
+  rejectionSignal,
+  type Delta,
+  type Interval,
+  type RejectionSignal,
+} from "./metrics";
 import corpus from "./corpus.json";
 import queries from "./queries.json";
 
@@ -71,11 +89,11 @@ export interface Regression {
   rerankerScore: number | null;
   likelyReason: string;
 }
-/** 95% bootstrap interval around a metric, so a difference can be read as signal or noise. */
-export interface Interval {
-  value: number;
-  lo: number;
-  hi: number;
+/** A pairwise comparison between two strategies on the same queries. */
+export interface StrategyDelta {
+  a: Strategy;
+  b: Strategy;
+  delta: Delta;
 }
 
 /**
@@ -90,13 +108,44 @@ export interface DatasetInfo {
   numQueries: number;
   numTune: number;
   numTest: number;
+  /** Held-out queries with at least one relevant document — the denominator of every metric. */
+  numTestJudged: number;
   numDocs: number;
+}
+
+/**
+ * The best each metric could possibly score on this label set. Printed beside every reported
+ * value so a saturated benchmark is visible in the run log rather than inferable from the labels.
+ */
+export interface Ceilings {
+  recall: { 1: number; 3: number; 5: number };
+  precision: { 3: number };
+  ndcg: { 5: number };
+  mrr: number;
+}
+
+/**
+ * Whether a strategy could tell an unanswerable query from an answerable one, if it were allowed
+ * to return nothing. Reported as separation, not as a rate — see `rejectionSignal`.
+ */
+export interface RejectionReport {
+  numAnswerable: number;
+  numUnanswerable: number;
+  legs: Record<"keyword" | "semantic", RejectionSignal>;
+  /** Why this is descriptive rather than a scored metric on the current label set. */
+  caveat: string;
 }
 
 export interface EvalReport {
   numQueries: number;
   numDocs: number;
   hybridWeight: number;
+  /**
+   * Candidates actually retrieved per leg, after clamping to corpus size. Recorded because the
+   * run output previously asserted "10 chunks per strategy" while the keyword leg retrieved every
+   * chunk in the corpus — a false provenance line captured verbatim into RESULTS.md.
+   */
+  depths: RetrievalDepths;
   /** Provenance of the numbers below. */
   dataset: DatasetInfo;
   /**
@@ -105,10 +154,28 @@ export interface EvalReport {
    * them. `strategiesAll` keeps the whole-set figures for continuity with earlier runs.
    */
   strategiesAll: Record<Strategy, StrategyMetrics>;
-  /** 95% bootstrap CIs for the headline hybrid metrics on the held-out split. */
-  ci: { hybridMrr: Interval; hybridR1: Interval; hybridR5: Interval };
+  /** Marginal 95% bootstrap CIs on the held-out split, for every strategy. */
+  ci: { mrr: Record<Strategy, Interval>; r1: Record<Strategy, Interval>; r5: Record<Strategy, Interval> };
+  /**
+   * Paired bootstrap on the per-query MRR difference, for every ordered pair. This is the test
+   * that answers "is A better than B"; the marginal intervals above cannot, because they discard
+   * the per-query pairing.
+   */
+  deltas: StrategyDelta[];
   strategies: Record<Strategy, StrategyMetrics>;
+  /** By query kind on the HELD-OUT split — what the gate scores. */
   byKind: Record<QueryKind, Record<Strategy, KindMetrics>>;
+  /** By query kind on tune+test, kept for continuity with numbers published before 2026-08-05. */
+  byKindAll: Record<QueryKind, Record<Strategy, KindMetrics>>;
+  /** Attainable maxima for `strategies`, on the held-out split. */
+  ceilings: Ceilings;
+  /**
+   * Share of judged queries with ANY relevant document in the top k — what a reader assumes R@1
+   * means. Unlike recall@k it is not capped below 1 by multi-relevant queries.
+   */
+  hitRate: Record<Strategy, { 1: number; 3: number; 5: number }>;
+  /** Correctly returning nothing for an unanswerable query, measured apart from ranking. */
+  rejection: RejectionReport;
   sweep: { weight: number; mrr: number }[];
   regressions: Regression[];
   gate: GateRow[];
@@ -127,56 +194,11 @@ const BOOTSTRAP_SAMPLES = 2000;
 const sha8 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 12);
 
-/**
- * Percentile bootstrap: resample the per-query scores with replacement and take the 2.5th and
- * 97.5th percentiles. With a few dozen queries the interval is wide, and that is the point —
- * it makes "0.96 vs 0.94" legible as overlapping rather than as a ranking.
- *
- * Deterministic (fixed seed) so re-running the eval does not jitter the published interval.
- */
-function bootstrapCI(perQuery: number[], samples = BOOTSTRAP_SAMPLES): Interval {
-  const n = perQuery.length;
-  const value = n === 0 ? 0 : perQuery.reduce((a, b) => a + b, 0) / n;
-  if (n === 0) return { value: 0, lo: 0, hi: 0 };
-
-  // Small deterministic PRNG (mulberry32) — no dependency, and a fixed seed keeps CIs stable.
-  let seed = 0x9e3779b9;
-  const rand = () => {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-
-  const means: number[] = [];
-  for (let s = 0; s < samples; s++) {
-    let sum = 0;
-    for (let i = 0; i < n; i++) sum += perQuery[(rand() * n) | 0];
-    means.push(sum / n);
-  }
-  means.sort((a, b) => a - b);
-  return {
-    value,
-    lo: means[Math.floor(0.025 * samples)],
-    hi: means[Math.floor(0.975 * samples) - 1],
-  };
-}
-
 class Rollback extends Error {}
 
 // ── ranking helpers (pure) ────────────────────────────────────────────────
-function dedupDocs(ordered: { docId: string }[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const r of ordered) {
-    if (!seen.has(r.docId)) {
-      seen.add(r.docId);
-      out.push(r.docId);
-    }
-  }
-  return out;
-}
+// The metrics themselves live in eval/metrics.ts so they can be tested against hand-derived
+// expectations without standing up Postgres or Elasticsearch. See test/unit/metrics.test.ts.
 
 function hybridDocs(q: QueryEval, weight: number): string[] {
   const toScored = (h: ChunkHit[]): Scored[] => h.map((x) => ({ id: x.chunkId, score: x.score }));
@@ -193,58 +215,51 @@ function rankedDocs(q: QueryEval, strat: Strategy, weight: number): string[] {
   return hybridDocs(q, weight);
 }
 
-function ranksForQuery(docs: string[], relevant: string[]): number[] {
-  const r: number[] = [];
-  for (let i = 0; i < docs.length; i++) {
-    if (relevant.includes(docs[i])) r.push(i + 1);
-  }
-  return r;
-}
-
-function recallAt(rankings: number[][], evals: QueryEval[], k: number): number {
-  if (rankings.length === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < rankings.length; i++) {
-    const total = evals[i].relevant.length;
-    if (total === 0) continue;
-    sum += rankings[i].filter(r => r <= k).length / total;
-  }
-  return sum / rankings.length;
-}
-
-function mrr(rankings: number[][]): number {
-  if (rankings.length === 0) return 0;
-  return rankings.reduce<number>((s, r) => s + (r.length > 0 ? 1 / r[0] : 0), 0) / rankings.length;
-}
-
-function precisionAt(rankings: number[][], k: number): number {
-  if (rankings.length === 0) return 0;
-  return rankings.reduce<number>((sum, r) => sum + r.filter(x => x <= k).length / k, 0) / rankings.length;
-}
-
-function ndcgAt(rankings: number[][], evals: QueryEval[], k: number): number {
-  if (rankings.length === 0) return 0;
-  let sum = 0;
-  for (let i = 0; i < rankings.length; i++) {
-    const total = evals[i].relevant.length;
-    if (total === 0) continue;
-    let idcg = 0;
-    for (let j = 1; j <= Math.min(k, total); j++) idcg += 1 / Math.log2(j + 1);
-    let dcg = 0;
-    for (const rank of rankings[i]) {
-      if (rank <= k) dcg += 1 / Math.log2(rank + 1);
-    }
-    sum += dcg / idcg;
-  }
-  return sum / rankings.length;
-}
-
 function ranksFor(evals: QueryEval[], strat: Strategy, weight: number): number[][] {
   return evals.map((q) => ranksForQuery(rankedDocs(q, strat, weight), q.relevant));
 }
 
-// ── main ──────────────────────────────────────────────────────────────────
-export async function runEvaluation(): Promise<EvalReport> {
+// ── candidate collection ──────────────────────────────────────────────────
+/**
+ * How many candidates each leg retrieves.
+ *
+ * These used to be hardcoded and *asymmetric* — keyword at `chunks.length`, semantic at 10 —
+ * which is neither what production runs nor a fair comparison between the legs, since
+ * `blendHybrid` min-max normalises each list independently and a deeper list has its top
+ * compressed toward 1.0. Production retrieves both legs at `CANDIDATE_LIMIT`.
+ */
+export interface RetrievalDepths {
+  keyword: number;
+  semantic: number;
+}
+
+/** Mirror production. Anything else measures a configuration that does not ship. */
+export const PRODUCTION_DEPTHS: RetrievalDepths = {
+  keyword: CANDIDATE_LIMIT,
+  semantic: CANDIDATE_LIMIT,
+};
+
+/** The asymmetric depths every published number before 2026-08-05 was measured at. */
+export const LEGACY_DEPTHS: RetrievalDepths = { keyword: Number.MAX_SAFE_INTEGER, semantic: 10 };
+
+export interface Candidates {
+  evals: QueryEval[];
+  chunkById: Map<string, { content: string }>;
+  idByFile: Map<string, string>;
+  numChunks: number;
+}
+
+/**
+ * Seed both stores and retrieve candidates for every query, at the requested depths.
+ *
+ * Split out of `runEvaluation` so the depth-matrix experiment can reuse one seeding pass:
+ * retrieving at depth k returns exactly the first k of a full-depth ranked list for both legs
+ * (ES returns BM25's top-k by score; the SQL leg is `ORDER BY ... LIMIT k`), so a single
+ * retrieval at maximum depth can be truncated to simulate any shallower configuration exactly.
+ */
+export async function collectCandidates(
+  depths: RetrievalDepths = PRODUCTION_DEPTHS,
+): Promise<Candidates> {
   // Pre-generate ids in app code so the same id keys the Postgres row and the ES document.
   const idByFile = new Map<string, string>();
   for (const doc of corpus) idByFile.set(doc.fileName, randomUUID());
@@ -259,6 +274,9 @@ export async function runEvaluation(): Promise<EvalReport> {
 
   const chunkVecs = await embed(chunks.map((c) => c.content));
   const queryVecs = await embed(queries.map((q) => q.q));
+
+  const kwDepth = Math.min(depths.keyword, chunks.length);
+  const smDepth = Math.min(depths.semantic, chunks.length);
 
   const evals: QueryEval[] = [];
   const titleByFile = new Map(corpus.map((d) => [d.fileName, d.title]));
@@ -279,7 +297,7 @@ export async function runEvaluation(): Promise<EvalReport> {
     // Keyword strategy: real BM25 against the ephemeral ES index (no transaction needed).
     const kwByQuery: ChunkHit[][] = [];
     for (const query of queries) {
-      const hits = await keywordSearch(query.q, null, chunks.length, esIndex);
+      const hits = await keywordSearch(query.q, null, kwDepth, esIndex);
       kwByQuery.push(hits.map((h) => ({ chunkId: h.chunkId, docId: h.documentId, score: h.score, snippet: h.snippet })));
     }
 
@@ -318,7 +336,7 @@ export async function runEvaluation(): Promise<EvalReport> {
               FROM document_chunks dc
               WHERE dc."documentId"::text = ANY(${corpusIds}) AND dc.embedding IS NOT NULL
               ORDER BY dc.embedding <=> ${vec}::vector
-              LIMIT 10
+              LIMIT ${smDepth}
             `;
             // Compare against document ids, not filenames (kw/sm rows carry ids).
             const relevantIds = query.relevant.map((f) => idByFile.get(f)!);
@@ -345,6 +363,19 @@ export async function runEvaluation(): Promise<EvalReport> {
     await deleteIndex(esIndex).catch(() => {});
   }
 
+  return { evals, chunkById, idByFile, numChunks: chunks.length };
+}
+
+// ── main ──────────────────────────────────────────────────────────────────
+export async function runEvaluation(
+  depths: RetrievalDepths = PRODUCTION_DEPTHS,
+): Promise<EvalReport> {
+  const { evals, chunkById, idByFile, numChunks } = await collectCandidates(depths);
+  const effectiveDepths: RetrievalDepths = {
+    keyword: Math.min(depths.keyword, numChunks),
+    semantic: Math.min(depths.semantic, numChunks),
+  };
+
   // Weight sweep on the TUNING split only. Sweeping on everything and then reporting on
   // everything is how a hyperparameter quietly launders itself into the headline metric: the
   // weight is chosen because it flatters these very queries. Held-out numbers come below.
@@ -361,9 +392,10 @@ export async function runEvaluation(): Promise<EvalReport> {
   const sweepExact = sweepRows.filter((e) => e.kind === "exact");
   const sweepPara = sweepRows.filter((e) => e.kind === "paraphrase");
   const balanced = (weight: number) => {
-    const e = sweepExact.length ? mrr(ranksFor(sweepExact, "hybrid", weight)) : 0;
-    const p = sweepPara.length ? mrr(ranksFor(sweepPara, "hybrid", weight)) : 0;
-    if (!sweepExact.length || !sweepPara.length) return mrr(ranksFor(sweepRows, "hybrid", weight));
+    const e = sweepExact.length ? mrr(ranksFor(sweepExact, "hybrid", weight), sweepExact) : 0;
+    const p = sweepPara.length ? mrr(ranksFor(sweepPara, "hybrid", weight), sweepPara) : 0;
+    if (!sweepExact.length || !sweepPara.length)
+      return mrr(ranksFor(sweepRows, "hybrid", weight), sweepRows);
     return (e + p) / 2;
   };
 
@@ -413,21 +445,24 @@ export async function runEvaluation(): Promise<EvalReport> {
   // Metrics calculation
   const metricsFor = (rows: QueryEval[], strat: Strategy): StrategyMetrics => {
     const ranks = ranksFor(rows, strat, weight);
-    return { 
-      recall: { 1: recallAt(ranks, rows, 1), 3: recallAt(ranks, rows, 3), 5: recallAt(ranks, rows, 5) }, 
-      precision: { 3: precisionAt(ranks, 3) },
+    return {
+      recall: { 1: recallAt(ranks, rows, 1), 3: recallAt(ranks, rows, 3), 5: recallAt(ranks, rows, 5) },
+      precision: { 3: precisionAt(ranks, rows, 3) },
       ndcg: { 5: ndcgAt(ranks, rows, 5) },
-      mrr: mrr(ranks) 
+      mrr: mrr(ranks, rows)
     };
   };
   const kindMetric = (rows: QueryEval[], strat: Strategy): KindMetrics => {
     const ranks = ranksFor(rows, strat, weight);
-    return { r1: recallAt(ranks, rows, 1), mrr: mrr(ranks) };
+    return { r1: recallAt(ranks, rows, 1), mrr: mrr(ranks, rows) };
   };
 
   const strategies = ["keyword", "semantic", "hybrid", "hybrid+rerank"] as const;
-  const exact = evals.filter((e) => e.kind === "exact");
-  const para = evals.filter((e) => e.kind === "paraphrase");
+  // Whole-set slices, kept only for continuity with numbers published before 2026-08-05. The gate
+  // scores the held-out slices below; these four rows used to feed it, which leaked the 30 tuning
+  // queries that selected the blend weight into four of six gate rows.
+  const exactAll = evals.filter((e) => e.kind === "exact");
+  const paraAll = evals.filter((e) => e.kind === "paraphrase");
 
   const regressions: Regression[] = [];
   const hybridRanks = ranksFor(evals, "hybrid", weight);
@@ -471,20 +506,84 @@ export async function runEvaluation(): Promise<EvalReport> {
     }
   }
 
-  // Per-query scores on the held-out split, for the bootstrap.
+  // Per-query scores on the held-out split, for the bootstrap. Unanswerable queries are dropped
+  // rather than contributing a zero, so the interval is around the same quantity the point
+  // estimate reports.
   const headlineRows = testRows.length > 0 ? testRows : evals;
+  const judgedIdx = headlineRows
+    .map((r, i) => (r.relevant.length > 0 ? i : -1))
+    .filter((i) => i >= 0);
   const headlineRanks = ranksFor(headlineRows, "hybrid", weight);
-  const reciprocalRanks = headlineRanks.map((r) => (r.length > 0 ? 1 / r[0] : 0));
+  const reciprocalRanks = judgedIdx.map((i) =>
+    headlineRanks[i].length > 0 ? 1 / headlineRanks[i][0] : 0,
+  );
   const hitAt = (k: number) =>
-    headlineRanks.map((r, i) => {
-      const total = headlineRows[i].relevant.length;
-      return total === 0 ? 0 : r.filter((x) => x <= k).length / total;
-    });
+    judgedIdx.map(
+      (i) => headlineRanks[i].filter((x) => x <= k).length / headlineRows[i].relevant.length,
+    );
+
+  // Rejection: can a leg's raw top score separate an unanswerable query from an answerable one?
+  // Hybrid is deliberately absent — blendHybrid min-max normalises per query, so its top score is
+  // 1.0 for every query and carries no absolute information at all.
+  const topsFor = (leg: "kw" | "sm") =>
+    headlineRows.map((r) => ({
+      top: (leg === "kw" ? r.kw : r.sm)[0]?.score ?? 0,
+      answerable: r.relevant.length > 0,
+    }));
+  const numUnanswerable = headlineRows.length - judgedIdx.length;
+  // Held-out slices by kind — what the gate scores from now on.
+  const exact = headlineRows.filter((e) => e.kind === "exact");
+  const para = headlineRows.filter((e) => e.kind === "paraphrase");
+
+  // Per-query reciprocal rank on the judged held-out queries, per strategy. Indexed identically
+  // across strategies, which is what makes the paired bootstrap below valid.
+  const perQueryRR = (strat: Strategy): number[] => {
+    const rk = ranksFor(headlineRows, strat, weight);
+    return judgedIdx.map((i) => (rk[i].length > 0 ? 1 / rk[i][0] : 0));
+  };
+  const perQueryHit = (strat: Strategy, k: number): number[] => {
+    const rk = ranksFor(headlineRows, strat, weight);
+    return judgedIdx.map(
+      (i) => rk[i].filter((x) => x <= k).length / headlineRows[i].relevant.length,
+    );
+  };
+  const rrByStrategy = Object.fromEntries(strategies.map((s) => [s, perQueryRR(s)])) as Record<
+    Strategy,
+    number[]
+  >;
+
+  // Every ordered pair, better-first, so a positive delta always reads as "a beats b".
+  const deltas: StrategyDelta[] = [];
+  for (let i = 0; i < strategies.length; i++) {
+    for (let j = i + 1; j < strategies.length; j++) {
+      const [a, b] = [strategies[i], strategies[j]];
+      const d = bootstrapDelta(rrByStrategy[a], rrByStrategy[b], BOOTSTRAP_SAMPLES);
+      deltas.push(d.value >= 0 ? { a, b, delta: d } : {
+        a: b,
+        b: a,
+        delta: { ...d, value: -d.value, lo: -d.hi, hi: -d.lo },
+      });
+    }
+  }
+  deltas.sort((x, y) => y.delta.value - x.delta.value);
+
+  const rejection: RejectionReport = {
+    numAnswerable: judgedIdx.length,
+    numUnanswerable,
+    legs: { keyword: rejectionSignal(topsFor("kw")), semantic: rejectionSignal(topsFor("sm")) },
+    caveat:
+      numUnanswerable <= 1
+        ? `n=${numUnanswerable} unanswerable query in the held-out split and 0 in the tuning split. ` +
+          `No rejection RATE is estimable from this, and no threshold can be calibrated without ` +
+          `fitting it to the test set. Reported as score separation only.`
+        : `${numUnanswerable} unanswerable queries. Threshold must be calibrated on the tuning split.`,
+  };
 
   const report: EvalReport = {
     numQueries: evals.length,
     numDocs: corpus.length,
     hybridWeight: weight,
+    depths: effectiveDepths,
     dataset: {
       version: DATASET_VERSION,
       queriesSha: sha8(queries),
@@ -492,13 +591,15 @@ export async function runEvaluation(): Promise<EvalReport> {
       numQueries: evals.length,
       numTune: tuneRows.length,
       numTest: testRows.length,
+      numTestJudged: judgedCount(headlineRows),
       numDocs: corpus.length,
     },
     ci: {
-      hybridMrr: bootstrapCI(reciprocalRanks),
-      hybridR1: bootstrapCI(hitAt(1)),
-      hybridR5: bootstrapCI(hitAt(5)),
+      mrr: Object.fromEntries(strategies.map((s) => [s, bootstrapCI(rrByStrategy[s], BOOTSTRAP_SAMPLES)])) as Record<Strategy, Interval>,
+      r1: Object.fromEntries(strategies.map((s) => [s, bootstrapCI(perQueryHit(s, 1), BOOTSTRAP_SAMPLES)])) as Record<Strategy, Interval>,
+      r5: Object.fromEntries(strategies.map((s) => [s, bootstrapCI(perQueryHit(s, 5), BOOTSTRAP_SAMPLES)])) as Record<Strategy, Interval>,
     },
+    deltas,
     strategiesAll: Object.fromEntries(strategies.map((s) => [s, metricsFor(evals, s)])) as Record<
       Strategy,
       StrategyMetrics
@@ -508,9 +609,30 @@ export async function runEvaluation(): Promise<EvalReport> {
       Strategy,
       StrategyMetrics
     >,
+    ceilings: {
+      recall: {
+        1: ceilingFor(headlineRows, "recall", 1),
+        3: ceilingFor(headlineRows, "recall", 3),
+        5: ceilingFor(headlineRows, "recall", 5),
+      },
+      precision: { 3: ceilingFor(headlineRows, "precision", 3) },
+      ndcg: { 5: ceilingFor(headlineRows, "ndcg", 5) },
+      mrr: ceilingFor(headlineRows, "mrr"),
+    },
+    hitRate: Object.fromEntries(
+      strategies.map((st) => {
+        const rk = ranksFor(headlineRows, st, weight);
+        return [st, { 1: hitRateAt(rk, headlineRows, 1), 3: hitRateAt(rk, headlineRows, 3), 5: hitRateAt(rk, headlineRows, 5) }];
+      }),
+    ) as Record<Strategy, { 1: number; 3: number; 5: number }>,
+    rejection,
     byKind: {
       exact: Object.fromEntries(strategies.map((s) => [s, kindMetric(exact, s)])) as Record<Strategy, KindMetrics>,
       paraphrase: Object.fromEntries(strategies.map((s) => [s, kindMetric(para, s)])) as Record<Strategy, KindMetrics>,
+    },
+    byKindAll: {
+      exact: Object.fromEntries(strategies.map((s) => [s, kindMetric(exactAll, s)])) as Record<Strategy, KindMetrics>,
+      paraphrase: Object.fromEntries(strategies.map((s) => [s, kindMetric(paraAll, s)])) as Record<Strategy, KindMetrics>,
     },
     sweep,
     regressions,
@@ -518,7 +640,9 @@ export async function runEvaluation(): Promise<EvalReport> {
     passed: true,
   };
 
-  // Quality gate, on the held-out split. Floors sit below current numbers to catch regressions,
+  // Quality gate. Every row is now scored on the HELD-OUT split: `byKind` used to be computed
+  // over tune+test, so four of these six rows included the 30 queries that chose the blend weight.
+  // Floors sit below current numbers to catch regressions,
   // not variance — so a pass means "has not regressed", never "meets an external bar".
   //
   // The gate used to assert "hybrid MRR ≥ best single strategy". That was removed, not relaxed:

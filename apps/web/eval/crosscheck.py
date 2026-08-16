@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Cross-check the harness metrics against pytrec_eval (NIST trec_eval).
+
+Phase 1a of the evaluation hardening. `eval/metrics.ts` is a from-scratch implementation that
+decides whether CI's quality gate passes; this scores identical rankings with the reference
+implementation the IR literature uses and reports the delta.
+
+Originally this expected `harness == (judged/total) * reference`, because trec_eval averages only
+over queries appearing in qrels while the harness divided by all 34. Phase 2 changed the harness to
+exclude unanswerable queries from every ranking metric, adopting trec_eval's convention, so the
+expected scale is now exactly 1: the two implementations should agree with no correction at all.
+
+The scale is read from harness.json rather than hardcoded, so this file does not need editing if
+the convention changes again -- but a scale of 1 is the stronger claim, and it is what is asserted.
+
+Exit code is non-zero if anything disagrees beyond tolerance, so this can gate CI.
+
+Usage: python3 eval/crosscheck.py [trec_dir]
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+try:
+    import pytrec_eval
+except ImportError as exc:
+    # Surface the real exception. A swallowed ImportError here cost a CI round trip: "not
+    # installed" and "installed but the extension will not load" need different fixes.
+    sys.exit(
+        f"cannot import pytrec_eval from {sys.executable}\n"
+        f"  underlying error: {exc!r}\n"
+        f"  install with: {sys.executable} -m pip install pytrec-eval-terrier\n"
+        "It is a C extension, so it needs a working compiler. On a Mac without Xcode command "
+        "line tools this will not build -- run it in CI instead."
+    )
+
+MEASURES = {"recip_rank", "recall_1", "recall_3", "recall_5", "P_3", "ndcg_cut_5"}
+# Agreement is asserted to 4 decimal places, per the brief.
+TOLERANCE = 1e-4
+
+
+def read_qrels(path: Path) -> dict[str, dict[str, int]]:
+    qrels: dict[str, dict[str, int]] = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        qid, _, docid, rel = line.split()
+        qrels.setdefault(qid, {})[docid] = int(rel)
+    return qrels
+
+
+def read_run(path: Path) -> dict[str, dict[str, float]]:
+    run: dict[str, dict[str, float]] = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        qid, _, docid, _, score, _ = line.split()
+        run.setdefault(qid, {})[docid] = float(score)
+    return run
+
+
+def main() -> int:
+    out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else ".evalrun/trec")
+    harness_blob = json.loads((out_dir / "harness.json").read_text())
+    total = harness_blob["numQueries"]
+    judged = harness_blob["numJudged"]
+    # Read the scale the exporter declared; do NOT recompute it from judged/total. The harness
+    # convention is what determines it, and since Phase 2 that convention matches trec_eval, so
+    # the declared value is 1. Recomputing here silently re-applied the pre-Phase-2 correction.
+    scale = harness_blob["predictedScale"]
+
+    print(f"cross-check against pytrec_eval  ({pytrec_eval.__name__})")
+    print(f"queries: {total} total, {judged} judged -> declared scale {scale:.6f}")
+    if scale == 1:
+        print("harness excludes unanswerable queries, as trec_eval does: expecting exact agreement")
+    print(f"tolerance: {TOLERANCE} (4 decimal places)\n")
+
+    qrels = read_qrels(out_dir / "qrels.txt")
+    if len(qrels) != judged:
+        print(f"FAIL  qrels holds {len(qrels)} queries, harness reports {judged} judged")
+        return 1
+
+    evaluator = pytrec_eval.RelevanceEvaluator(qrels, MEASURES)
+    failures: list[str] = []
+
+    for ranker, expected in harness_blob["metrics"].items():
+        run_path = out_dir / f"{ranker}.run"
+        if not run_path.exists():
+            failures.append(f"{ranker}: missing {run_path}")
+            continue
+
+        per_query = evaluator.evaluate(read_run(run_path))
+        # trec_eval's own averaging: mean over queries present in qrels.
+        reference = {
+            m: sum(q[m] for q in per_query.values()) / len(per_query) for m in sorted(MEASURES)
+        }
+
+        print(f"── {ranker} " + "─" * (66 - len(ranker)))
+        print(f"{'measure':<14}{'harness':>12}{'reference':>12}{'ref x scale':>14}{'delta':>12}  ")
+        for m in sorted(MEASURES):
+            ours = expected[m]
+            ref = reference[m]
+            rescaled = ref * scale
+            delta = ours - rescaled
+            ok = abs(delta) <= TOLERANCE
+            if not ok:
+                failures.append(
+                    f"{ranker}/{m}: harness {ours:.6f} vs reference*scale {rescaled:.6f} "
+                    f"(raw reference {ref:.6f}, delta {delta:+.6f})"
+                )
+            print(
+                f"{m:<14}{ours:>12.6f}{ref:>12.6f}{rescaled:>14.6f}{delta:>+12.2e}"
+                f"  {'ok' if ok else 'MISMATCH'}"
+            )
+        print()
+
+    if failures:
+        print("FAILED — the reference is right; fix the implementation or document the convention.")
+        for f in failures:
+            print(f"  {f}")
+        return 1
+
+    if scale == 1:
+        print("All measures agree with pytrec_eval to 4dp, with no correction applied.")
+        print(
+            "Confirms: the metric implementations are correct AND their treatment of unanswerable\n"
+            "queries now matches the reference convention exactly."
+        )
+    else:
+        print(f"All measures agree with pytrec_eval to 4dp after scaling the reference by {scale:.6f}.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
