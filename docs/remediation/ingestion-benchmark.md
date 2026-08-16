@@ -1,14 +1,50 @@
 # Remediation Phase 1 — Elasticsearch projection throughput
 
-**Status: PARTIAL.** The optimisation is implemented and gated by the existing test suites. Two
-measurement gaps remain, both stated in §6 and §7: the figures below are from a developer workstation
-rather than the 4-vCPU CI runner that produced the 4.5 docs/s baseline, and they were taken on
-build D *before* the batching code was reverted out of the tree, so the exact shipping code has not
-yet had a clean run of its own.
+**Status: PASS** for the measurement, with one limitation carried forward (§6.1, segment pressure
+at corpus scale, to be settled by Phase 6).
 
-**Headline: 0.99 → 11.81 docs/s per worker (≈12×), 7.21 → 17.43 docs/s at concurrency 8 (2.4×).**
-The change that produced it is one line. The elaborate change I built first produced nothing, and
-the benchmark is what said so.
+**Headline, measured on CI on the shipping code — 1.00 → 6.15 docs/s per worker (6.2×), and
+4.67 → 8.23 docs/s at saturation (1.8×). Per-document p50 1006 → 144 ms. The write path falls from
+88.3% of ingestion to 3.4%.** The change that produced it is one line. The elaborate change built
+first produced nothing, and the benchmark is what said so.
+
+---
+
+## 0. The result that counts
+
+Both arms dispatched on the same CI runner spec (4 vCPU, `ubuntu-latest`), same benchmark build,
+same 40 documents, 3 passes each, neither flagged by the instability guard.
+
+| concurrency | `wait_for` (before) | `refresh: true` (after) | gain |
+|---|---|---|---|
+| 1 | 1.00 (0.99–1.00) | **6.15** (5.50–6.25) | **6.2×** |
+| 2 | 2.00 (1.98–2.01) | **7.01** (6.72–7.37) | **3.5×** |
+| 4 | 3.90 (3.83–4.24) | **7.81** (7.69–8.29) | **2.0×** |
+| 8 | 4.67 (4.51–5.18) | **8.23** (8.13–8.37) | **1.8×** |
+
+p50 per document at concurrency 1: **1006 → 144 ms.** Stage breakdown for one document:
+
+```
+before                                    after
+  write path     420.1 ms  88.3%            embed         214.3 ms  95.2%
+  embed           53.8 ms  11.3%            write path      7.7 ms   3.4%
+  TOTAL          475.9 ms                   TOTAL         225.0 ms
+```
+
+The write path goes from dominating the pipeline to being a rounding error, and embedding — the
+thing everyone assumes is the cost of a RAG ingest — is finally what the pipeline is actually
+spending its time on.
+
+The gain shrinks with concurrency because 4 vCPUs make CPU-bound ONNX embedding the binding
+constraint once the refresh stops blocking. That is the honest shape of this result: it is large
+for a single worker and modest at saturation, and quoting only the 6.2× would misrepresent it.
+
+Runs: [before](https://github.com/JCHETAN26/IndexFlow/actions/runs/31925524370) ·
+[after](https://github.com/JCHETAN26/IndexFlow/actions/runs/31925857101).
+
+The workstation figures in §2 are kept as they were taken. They are larger (11.9× and 2.4×) because
+that machine has 8 cores, and they were measured on build D rather than the shipping code — reasons
+enough to publish the CI pair instead.
 
 ---
 
@@ -139,11 +175,12 @@ discarded, not reported.
    that is where this must be measured. `PROJECTION_REFRESH=wait_for` reverts to the old behaviour
    without a code change if it bites; restoring the batching would mean recovering it from history,
    and should happen only if that measurement calls for it.
-2. **CI hardware.** Every number here is from an 8-core developer workstation with co-located
-   services in Docker. The 4.5 docs/s figure in the project docs is from a 4-vCPU GitHub Actions
-   runner. The workstation baseline reproduces CI closely at concurrency 1 (0.99 vs 0.99 docs/s,
-   1020 vs 1015 ms p50), which is a reason to trust the *ratio*, not a licence to publish the
-   absolute.
+2. ~~**CI hardware.**~~ **Closed** by the pair in §0. Both arms now come from the 4-vCPU runner
+   that produced the original 4.5 docs/s figure, on the shipping code. Worth recording that the
+   ratio did *not* transfer between machines: 11.9× on 8 cores against 6.2× on 4, because the
+   binding constraint moves to CPU-bound embedding sooner on the smaller runner. Had the
+   workstation number been published as though it were general, it would have overstated the result
+   by nearly 2×.
 3. **Concurrency beyond 8**, and any concurrent search load competing with ingestion.
 4. **Re-ingest and ACL-change paths**, where `deleteByQuery` actually matches and the second
    refresh in the baseline is real. Those may improve more than first-time ingest did; unmeasured.
@@ -164,8 +201,17 @@ one is if anything marginally cheaper, but *equivalent* is an argument, not a me
 The confirmation run on the shipping code was **discarded**: its passes disagreed by 5.34× against
 a 1.25× limit (1.24 / 4.04 / 6.63 docs/s at concurrency 1, rising monotonically as contention
 cleared, machine load 5.52). The spread guard added in §5 caught it, which is the guard working as
-intended. **A clean run on the shipping code is outstanding**, and the CI run in §6.2 satisfies both
-that gap and the hardware one at once.
+intended. Both gaps — shipping code, and CI hardware — are closed by the pair in §0, which measures
+the merged code on the runner that produced the original baseline.
+
+The guard then earned itself a second time, on CI. The first forced-refresh run tripped it at 1.34×
+on an **idle** runner (load 1.28), which contamination does not explain. The cause was a third
+variant of the measurement-order defect: the warmup ran only at max concurrency, leaving the
+concurrency-1 path cold, and concurrency 1 is measured first — so the ramp landed on the row every
+speedup is computed against (passes of 5.01 / 6.57 / 6.70 while the other levels agreed within
+10%). The warmup itself running at 2.93 docs/s against a 6.57 steady state is the tell. Fixed by
+warming every level, after which both arms came back clean. Phase 9b had this defect across
+strategies, §5 above fixed it across runs, and it still came back across concurrency levels.
 
 ## 8. Verification
 

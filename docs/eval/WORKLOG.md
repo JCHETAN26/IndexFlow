@@ -1716,3 +1716,38 @@ shipping code differ only in query shape (`findUnique` + `size:1` search + `term
 `findMany` + aggregation + `terms`), and the shipping one should be marginally cheaper — but
 "should be" is what this phase has spent all day disproving. The CI run settles it and the hardware
 question together.
+
+### CI settles it: 6.2× per worker, 1.8× at saturation
+
+Both arms dispatched on the same 4-vCPU runner, same benchmark build, on the code that merges —
+[before](https://github.com/JCHETAN26/IndexFlow/actions/runs/31925524370),
+[after](https://github.com/JCHETAN26/IndexFlow/actions/runs/31925857101). Neither flagged.
+
+```
+docs/s            c1     c2     c4     c8
+  wait_for       1.00   2.00   3.90   4.67
+  forced         6.15   7.01   7.81   8.23
+  gain           6.2x   3.5x   2.0x   1.8x
+
+p50 @ c1: 1006 -> 144 ms
+stage:    write path 420.1 ms (88.3%) -> 7.7 ms (3.4%); embed is now 95.2%
+```
+
+**The workstation ratio did not transfer.** 11.9× on 8 cores, 6.2× on 4 — because once the refresh
+stops blocking, CPU-bound ONNX embedding becomes the constraint, and it binds sooner on a smaller
+runner. Publishing the workstation figure as though it were a property of the change would have
+overstated it by nearly 2×. That is the second time this phase that a number looked fine on one
+machine and shrank when measured properly, and it is the argument for the rule that the CI runner
+decides.
+
+Getting there needed the instability guard twice more. The first CI attempt at the forced arm
+tripped it at 1.34× on an **idle** runner, which no amount of "other load" explains — the warmup ran
+only at max concurrency, so the concurrency-1 path was cold when it was measured first, and
+concurrency 1 anchors every speedup. Passes of 5.01 / 6.57 / 6.70 against other levels agreeing
+within 10%, with the warmup itself at 2.93 docs/s against a 6.57 steady state. Warming every level
+fixed it and both arms came back clean.
+
+That is the same defect three times in one benchmark's life: 9b had it across strategies, this phase
+fixed it across runs, and it still came back across concurrency levels. The lesson is not "be more
+careful" — it is that a benchmark needs an instrument that fails loudly, because the failures look
+exactly like results.
