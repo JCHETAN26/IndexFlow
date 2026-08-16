@@ -50,3 +50,33 @@ The honest alternative, which needs no CI confirmation and is arguably the bette
 > engine's own refresh counters to verify it, and found the batching contributed nothing — the
 > 89%-of-runtime cost was a one-line `wait_for` blocking on a 1 s refresh clock. Discarded the
 > batching, shipped the one line, and recorded both predictions it falsified.
+
+---
+
+## Phase 2/3 — SaaSBench generator and quality gate
+
+| Claim | Metric | Evidence | Status | Résumé safe |
+|---|---:|---|---|---|
+| Built a synthetic SaaS benchmark with document and query vocabularies that share no content word, enforced as a test | 18 concepts, 0 leaks | [`saasbench-design.md`](saasbench-design.md) §1; `test/unit/saasbench.test.ts` | **VERIFIED** | **Yes** |
+| The disjointness check caught 9 of 18 concepts leaking on first authoring | 9/18 | same | **VERIFIED** | **Yes** — it is the strongest evidence the mechanism is real |
+| The benchmark discriminates: strategies separate by 0.061 nDCG@10, CI excluding zero | 0.061 [0.037, 0.085] | §4, paired bootstrap, 895 test queries | **VERIFIED** | **Yes** — at 3,400 documents only |
+| Lexical retrieval wins token-matching classes, dense wins vocabulary-gap classes | identifier 0.868 vs 0.038; troubleshooting 0.101 vs 0.186 | §4 per-class table | **VERIFIED** | **Yes** — name the corpus |
+| The quality gate rejected the generator five times, each on a real construction defect, with no threshold relaxed | 5 failures | §6 | **VERIFIED** | **Yes** — this is the strongest story in the phase |
+| Queries and qrels are invariant to corpus size | hashes equal at 3,400 and 5,000 | `saasbench.test.ts` | **VERIFIED** | **Yes** |
+| Absolute nDCG@10 figures (keyword 0.238 etc.) | — | §4 | **VERIFIED at 3,400 docs** | Only with the corpus size stated; they are not comparable to BEIR |
+| SaaSBench separation survives to 100K | — | not measured | **UNVERIFIED** | **No** — that is what the scale curve is for |
+| SaaSBench exercises the production chunking path | 1.00 chunks/document | §7.1 | **WITHDRAWN** | **No** — it exercises document-level retrieval only |
+| SaaSBench scores predict production quality | — | §7.2 | **UNVERIFIED** | **No** — the corpus omits user-voice text and is harder than reality |
+| Permission-aware retrieval quality | — | scored against global qrels, not authorized | **UNVERIFIED** | **No** — Phase 8 |
+
+### Phase 2/3 résumé candidate
+
+> Designed a 3,400-document synthetic SaaS retrieval benchmark with graded relevance, permission
+> metadata and adversarial near-miss distractors, built on paired document/query vocabularies that
+> are enforced disjoint by test — then wrote an acceptance gate that rejected the generator **five
+> times**, each on a construction defect that had produced plausible-looking retrieval numbers
+> (relevant sets inflated to 72 documents; near-miss distractors sharing every queryable attribute
+> with their target), and fixed the generator rather than relaxing a threshold.
+
+The gate story is worth more than any score it produced. A benchmark that passes its own quality
+audit on the first attempt has usually not been audited.
