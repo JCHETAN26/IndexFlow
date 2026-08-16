@@ -1,0 +1,7 @@
+# Corpus, scenarios and queries are regenerated deterministically from the seed and the generator
+# version, so the bytes do not belong in git — but the manifest does. Its hashes are the frozen
+# artifact: `saasbench.test.ts` regenerates from the seed and asserts they still match, so an
+# accidental change to generation fails the build instead of silently redefining the benchmark.
+*/documents.jsonl
+*/scenarios.json
+*/queries.json

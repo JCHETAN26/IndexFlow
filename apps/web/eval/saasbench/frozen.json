@@ -1,0 +1,10 @@
+{
+  "docs": 3400,
+  "seed": 42,
+  "generatorVersion": "1.0.0",
+  "corpusHash": "a0779308d5b754d208f00b2442563029bb004d552d6dd77bb190454f83d72b9a",
+  "queriesHash": "b875fd2865b9398ca3c56929ee162344e3faa31497c723107ea25fe8f20449e2",
+  "qrelsHash": "6ebf6333074942e4a604b0db38c47f25e98dd5396d927f9232eaf15721353108",
+  "queries": 1130,
+  "note": "Regenerate with: pnpm saasbench:generate -- --docs 3400 --seed 42"
+}

@@ -1,0 +1,43 @@
+{
+  "generatorVersion": "1.0.0",
+  "seed": 42,
+  "createdAt": "2026-08-16T07:25:06.162Z",
+  "documents": 3400,
+  "scenarios": {
+    "core": 150,
+    "hardNegative": 670,
+    "filler": 25
+  },
+  "queries": {
+    "total": 1130,
+    "byClass": {
+      "identifier": 150,
+      "paraphrase": 150,
+      "troubleshooting": 150,
+      "numeric": 150,
+      "version": 150,
+      "multi-document": 150,
+      "hard-negative": 150,
+      "ambiguous": 18,
+      "permission-sensitive": 54,
+      "unanswerable": 8
+    },
+    "tune": 228,
+    "test": 902
+  },
+  "formats": {
+    "md": 2259,
+    "txt": 985,
+    "csv": 156
+  },
+  "visibility": {
+    "public": 1820,
+    "owner-only": 136,
+    "group": 899,
+    "multi-group": 340,
+    "user-shared": 205
+  },
+  "corpusHash": "a0779308d5b754d208f00b2442563029bb004d552d6dd77bb190454f83d72b9a",
+  "queriesHash": "b875fd2865b9398ca3c56929ee162344e3faa31497c723107ea25fe8f20449e2",
+  "qrelsHash": "6ebf6333074942e4a604b0db38c47f25e98dd5396d927f9232eaf15721353108"
+}
