@@ -90,7 +90,6 @@ By class (nDCG@10) — the reason the benchmark is worth running:
 | identifier | 120 | **0.874** | 0.016 | 0.542 |
 | numeric | 121 | **0.277** | 0.133 | 0.226 |
 | hard-negative | 118 | 0.130 | **0.227** | 0.224 |
-
 | paraphrase | 117 | 0.126 | **0.207** | 0.206 |
 | multi-document | 120 | 0.092 | **0.201** | 0.182 |
 | permission-sensitive | 38 | 0.091 | **0.182** | 0.174 |
