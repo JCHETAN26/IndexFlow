@@ -266,9 +266,17 @@ async function main() {
     // the runs execute in a fixed order, that cost lands entirely on the concurrency-1 row and
     // inflates every speedup computed against it. This is the same measurement-order defect the
     // latency benchmark had in Phase 9b, in a different place.
+    // Warm EVERY concurrency level, not just one. Warming only at max concurrency left the
+    // concurrency-1 path cold, and concurrency 1 is measured first — so the ramp landed entirely
+    // on the row that anchors every speedup. It showed up on CI as passes of 5.01 / 6.57 / 6.70
+    // docs/s at concurrency 1 while the other three levels agreed to within 10%, with the warmup
+    // itself running at 2.93 docs/s against a 6.57 steady state: still cold when it finished.
     process.stdout.write("warming up (discarded)... ");
-    const warm = await runAtConcurrency(Math.max(...CONCURRENCIES), owner.id, WARMUP_DOCS);
-    console.log(`${round(warm.docsPerSec).toFixed(2)} docs/s (not reported)\n`);
+    const warm: number[] = [];
+    for (const c of CONCURRENCIES) {
+      warm.push((await runAtConcurrency(c, owner.id, WARMUP_DOCS)).docsPerSec);
+    }
+    console.log(`${warm.map((d) => round(d).toFixed(2)).join("  ")} docs/s (not reported)\n`);
 
     console.log("stage breakdown (single document, warm):");
     const bd = await stageBreakdown(owner.id);
