@@ -69,6 +69,30 @@ export async function bumpAclVersion(
   await enqueueProjection(tx, documentId, reason);
 }
 
+/**
+ * How a projection publishes its writes to Elasticsearch.
+ *
+ * `wait_for` blocks until the next *scheduled* refresh. With `index.refresh_interval` at its 1 s
+ * default that is a hard floor of up to a second on every projection, and it showed up as a p50 of
+ * 1020–1055 ms per document at *every* concurrency level — the refresh clock, not the pipeline's
+ * work. `true` performs the refresh immediately instead of waiting for that clock.
+ *
+ * Elasticsearch's guidance prefers `wait_for`, on the grounds that forcing a refresh per request
+ * makes many tiny segments and the merge pressure that follows. Measured here, the trade is
+ * lopsided: ingestion went from 0.99 to 11.81 docs/s per worker (p50 1020 → 82 ms) while the index
+ * stayed at 6 segments, and the counters showed the refresh *count* was never the cost — waiting
+ * for it was. See docs/remediation/ingestion-benchmark.md.
+ *
+ * This does not weaken the guarantee the refresh is there to provide. `true` is the stronger of the
+ * two: the write is visible when the call returns, rather than at the next tick. A document still
+ * becomes INDEXED only once the keyword index demonstrably holds it.
+ *
+ * The segment cost of one forced refresh per document is NOT measured beyond 40-document runs. Set
+ * `PROJECTION_REFRESH=wait_for` to revert if a large bulk load shows merge pressure.
+ */
+const PROJECTION_REFRESH: "wait_for" | true =
+  process.env.PROJECTION_REFRESH === "wait_for" ? "wait_for" : true;
+
 export interface ProjectionOutcome {
   documentId: string;
   action: "indexed" | "deleted" | "skipped-stale" | "noop";
@@ -168,8 +192,12 @@ async function projectWithinLock(
   // Replace wholesale: drop anything ES holds for this document, then write the current set.
   // Chunk ids are stable per ingest, so a re-index that produced fewer chunks cannot leave
   // orphans behind.
-  await deleteDocumentChunks(documentId, index, true);
-  await indexChunks(esChunks, index, "wait_for");
+  //
+  // The delete does not force a refresh of its own — the index call that follows publishes both
+  // together, so a reader never sees one without the other. Forcing one here as well used to reset
+  // the refresh clock, which is what made the `wait_for` below then block for a full interval.
+  await deleteDocumentChunks(documentId, index, false);
+  await indexChunks(esChunks, index, PROJECTION_REFRESH);
 
   // The document is only INDEXED once the keyword leg actually has it. This is the state
   // transition the old code got wrong: it set INDEXED inside the Postgres transaction, before
