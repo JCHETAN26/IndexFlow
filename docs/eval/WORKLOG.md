@@ -1609,3 +1609,110 @@ The two are not interchangeable, and the distinction matters: an ACL change trig
 model is the expensive operation in this system, and nothing before this measured it.
 
 **Gate: Phase 9 complete — 9a, 9b and 9c all measured.**
+
+---
+
+## 2026-08-15 — Remediation Phase 1: the ingestion bottleneck, and the fix that was not mine
+
+Phase 9c found that the write path is 89.5% of ingestion and named two forced Elasticsearch
+refreshes per document as the cause. This phase set out to fix that by batching the projection so a
+refresh is amortised across documents. **The batching did nothing, the premise behind it was wrong,
+and the actual fix is one line.**
+
+### Pre-registered
+
+Before the first run, in this order:
+
+1. Baseline forces ~2 refreshes per document; batching cuts that sharply, with a large gain at
+   concurrency 4–8 and little at 1.
+2. After switching to a forced refresh, removing batching will cost throughput at concurrency 8
+   through refresh churn.
+
+Both were wrong. The second was wrong even after the first had already been falsified, which is the
+more embarrassing of the two — I had the disconfirming data in hand and re-derived the same false
+premise from it.
+
+### What the refresh counters said
+
+The bench now reads Elasticsearch's own `refresh.total` and `refresh.total_time_in_millis` around
+each run, rather than inferring refresh cost by subtraction (the estimator that was wrong by 89
+percentage points in 9c). That instrument is what settled this:
+
+```
+refreshes per document, concurrency 1 / 2 / 4 / 8
+  baseline                1.02  0.50  0.25  0.13
+  batched                 1.02  0.50  0.25  0.13
+  batched + forced        1.02  0.53  0.25  0.13
+```
+
+**Identical.** Elasticsearch's refresh is time-based and per-shard, so concurrent `wait_for` callers
+already park on the same scheduled refresh — the amortisation I was building existed before my code
+did. And on first-time ingest `deleteByQuery` matches nothing, so there is one refresh per document,
+not two. 9c's "two forced refreshes" is true of re-ingest and ACL change; the throughput benchmark
+measures neither.
+
+### The result
+
+Median of 3 interleaved passes, 40 documents, 8-core workstation:
+
+```
+docs/s              c1     c2     c4     c8
+  A baseline        0.99   2.00   4.11   7.21
+  B batched         0.99   1.93   3.84   7.34     <- the engineering. nothing.
+  C batched+forced  7.82  11.24  13.93  15.77
+  D forced only    11.81  14.36  16.64  17.43     <- ships
+
+per-document p50, c1:  1020 ms -> 82 ms
+stage breakdown:       write path 800 ms -> 56.8 ms; embed now 53.8% of the pipeline
+```
+
+Baseline p50 sits at 1020–1055 ms at *every* concurrency level. That is `index.refresh_interval`,
+at its 1 s default. `wait_for` blocks until the next scheduled refresh; `refresh: true` fires it
+immediately. Same refresh count, ~12× the throughput, and a *stronger* visibility guarantee — the
+write is visible when the call returns rather than at the next tick. All 23 integration tests, 8/8
+consistency, 8/8 sharing and 8/8 leak checks pass unchanged, and the integration suite got 6× faster
+because it had been waiting a refresh interval per projection.
+
+### Three instrument defects, found before trusting anything
+
+- **Cold start owned the first row.** Concurrency 1 ran first and absorbed the model load and cold
+  caches: 0.44 docs/s, p95 11.6 s against p50 1.1 s — slower than CI on weaker hardware. It is the
+  denominator of every speedup, so it inflated the entire column. Phase 9b's measurement-order bug,
+  in a new place. Fixed with a discarded warmup.
+- **The first before/after showed +27% and was noise.** The contaminated baseline scored 6.00
+  docs/s where the clean one scores 7.21. Fixed with 3 interleaved passes and min–max reporting.
+- **A confirmation run degraded to 3.15–8.49 docs/s across passes.** An unrelated editor process had
+  taken most of four cores; the ES index was healthy at 6 segments. The bench now prints the
+  environment with every run and shouts `⚠ UNSTABLE` above a 1.25× inter-pass spread. That run is
+  discarded rather than reported.
+
+### What this does not say
+
+The forced refresh is 1.0 refreshes/doc against 0.13 batched at concurrency 8. Across 40 documents
+that costs nothing measurable and the index stayed at 6 segments; across a six-figure corpus it may
+not, and **Phase 6 loads 100K documents**. That is where it gets measured. The batching is kept in
+the tree, off by default, as the lever if it bites — the one honest use for code that measured as
+useless.
+
+Everything here is one workstation. The published figure needs the CI runner that produced 4.5
+docs/s. The workstation reproduces CI closely at concurrency 1 (0.99 vs 0.99 docs/s, 1020 vs 1015 ms
+p50), which is grounds to trust the ratio, not to publish the absolute.
+
+### Postscript: the batching was reverted, and the confirmation run was discarded
+
+Having measured the batching as worthless, keeping it would have meant defending ~300 lines with an
+unmeasured hypothesis about Phase 6 — the exact move this project spent nine phases learning not to
+make. It is out. The shipping change is four lines: a `PROJECTION_REFRESH` constant, the delete no
+longer forcing its own refresh, and the index call taking that constant. `lib/es.ts` is untouched.
+All gates re-run green against it (73 unit, 23 integration, 8/8 consistency, 8/8 sharing, 8/8 leak).
+
+The confirmation benchmark on that reverted code then **fired the spread guard added earlier in this
+same phase**: passes of 1.24 / 4.04 / 6.63 docs/s at concurrency 1, a 5.34× disagreement against a
+1.25× limit, machine load 5.52. Monotonically rising rather than random, so it is contention
+clearing rather than noise. Discarded, not reported.
+
+So Phase 1 closes with the mechanism proven and the shipping number still owed. Build D and the
+shipping code differ only in query shape (`findUnique` + `size:1` search + `term` delete, against
+`findMany` + aggregation + `terms`), and the shipping one should be marginally cheaper — but
+"should be" is what this phase has spent all day disproving. The CI run settles it and the hardware
+question together.
