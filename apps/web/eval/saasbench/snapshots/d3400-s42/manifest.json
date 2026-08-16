@@ -1,12 +1,12 @@
 {
   "generatorVersion": "1.0.0",
   "seed": 42,
-  "createdAt": "2026-08-16T07:25:06.162Z",
+  "createdAt": "2026-08-16T21:08:16.124Z",
   "documents": 3400,
   "scenarios": {
     "core": 150,
     "hardNegative": 670,
-    "filler": 25
+    "filler": 33
   },
   "queries": {
     "total": 1130,
@@ -26,18 +26,18 @@
     "test": 902
   },
   "formats": {
-    "md": 2259,
-    "txt": 985,
-    "csv": 156
+    "md": 2257,
+    "txt": 981,
+    "csv": 162
   },
   "visibility": {
-    "public": 1820,
+    "public": 1819,
     "owner-only": 136,
-    "group": 899,
+    "group": 900,
     "multi-group": 340,
     "user-shared": 205
   },
-  "corpusHash": "a0779308d5b754d208f00b2442563029bb004d552d6dd77bb190454f83d72b9a",
+  "corpusHash": "6e9768ef7407ba95eb6396aaf7745d8f6b2a82704343a3c0420fd7570d595bd2",
   "queriesHash": "b875fd2865b9398ca3c56929ee162344e3faa31497c723107ea25fe8f20449e2",
-  "qrelsHash": "6ebf6333074942e4a604b0db38c47f25e98dd5396d927f9232eaf15721353108"
+  "qrelsHash": "d1be3733131b7fcfa170579987f5b1ed497d6dca8c6230322fd70821f1929ae2"
 }

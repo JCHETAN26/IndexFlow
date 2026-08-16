@@ -2,9 +2,9 @@
   "docs": 3400,
   "seed": 42,
   "generatorVersion": "1.0.0",
-  "corpusHash": "a0779308d5b754d208f00b2442563029bb004d552d6dd77bb190454f83d72b9a",
+  "corpusHash": "6e9768ef7407ba95eb6396aaf7745d8f6b2a82704343a3c0420fd7570d595bd2",
   "queriesHash": "b875fd2865b9398ca3c56929ee162344e3faa31497c723107ea25fe8f20449e2",
-  "qrelsHash": "6ebf6333074942e4a604b0db38c47f25e98dd5396d927f9232eaf15721353108",
+  "qrelsHash": "d1be3733131b7fcfa170579987f5b1ed497d6dca8c6230322fd70821f1929ae2",
   "queries": 1130,
   "note": "Regenerate with: pnpm saasbench:generate -- --docs 3400 --seed 42"
 }

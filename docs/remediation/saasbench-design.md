@@ -57,37 +57,56 @@ test pins this by generating at two sizes and asserting the query and qrel hashe
 
 ## 4. Result at the 3,400 rung
 
-Test split, 895 judged queries, production blend weight, exact KNN.
+Test split, 895 judged queries, 7,651 chunks (2.25 per document), production blend weight, exact KNN.
 
 | strategy | nDCG@10 | MRR@10 | R@5 | R@10 | Success@1 |
 |---|---|---|---|---|---|
-| keyword | **0.238** | 0.409 | 12.7% | 22.4% | 28.7% |
-| semantic | 0.178 | 0.435 | 10.0% | 15.3% | 28.5% |
-| hybrid | 0.229 | **0.477** | 12.0% | 21.3% | 28.4% |
+| keyword | 0.238 | 0.415 | 12.5% | 22.3% | 27.8% |
+| semantic | 0.168 | 0.445 | 9.3% | 14.7% | **30.2%** |
+| hybrid | **0.250** | **0.490** | **12.7%** | **24.1%** | 29.1% |
+
+### Chunking changed which strategy wins
+
+An earlier revision produced **1.00 chunks per document** — documents ran ~120 words against a
+180-word chunk target, so nothing ever split. On that corpus keyword led at 0.238 and hybrid trailed
+at 0.229. With documents lengthened to a 369-word median, hybrid leads at 0.250 and keyword is
+unchanged at 0.238.
+
+The mechanism is the one the architecture is built around. Both legs retrieve **chunks**; hybrid
+correlates them by chunk id — which is why chunk UUIDs are generated in application code before
+either store is written — blends, and only then de-duplicates to documents. When the two legs match
+*different chunks of the same document*, blending rewards that document before de-duplication. At one
+chunk per document that mechanism is inert, and the benchmark was suppressing hybrid's advantage
+while reporting keyword as the winner.
+
+Had the corpus been scaled before this was fixed, every rung of the scale curve would have carried
+the artifact — and the conclusion drawn from it would have been that hybrid does not help on this
+domain.
 
 By class (nDCG@10) — the reason the benchmark is worth running:
 
 | class | n | keyword | semantic | hybrid |
 |---|---|---|---|---|
-| identifier | 120 | **0.868** | 0.038 | 0.366 |
-| numeric | 121 | **0.283** | 0.160 | 0.239 |
-| hard-negative | 118 | 0.134 | **0.233** | 0.232 |
-| version | 123 | 0.126 | **0.235** | 0.228 |
-| paraphrase | 117 | 0.139 | 0.214 | **0.223** |
-| multi-document | 120 | 0.078 | **0.190** | 0.165 |
-| permission-sensitive | 38 | 0.103 | **0.187** | 0.179 |
-| troubleshooting | 121 | 0.101 | **0.186** | 0.181 |
-| ambiguous | 17 | **0.119** | 0.090 | 0.115 |
+| identifier | 120 | **0.874** | 0.016 | 0.542 |
+| numeric | 121 | **0.277** | 0.133 | 0.226 |
+| hard-negative | 118 | 0.130 | **0.227** | 0.224 |
+
+| paraphrase | 117 | 0.126 | **0.207** | 0.206 |
+| multi-document | 120 | 0.092 | **0.201** | 0.182 |
+| permission-sensitive | 38 | 0.091 | **0.182** | 0.174 |
+| troubleshooting | 121 | 0.094 | 0.173 | **0.180** |
+| version | 123 | 0.112 | 0.228 | **0.229** |
+| ambiguous | 17 | **0.279** | 0.108 | 0.170 |
 
 Lexical retrieval owns the classes where tokens genuinely match; dense retrieval owns every class
 where the query and the document describe the same fact in different words. That separation is the
 disjoint-vocabulary design showing up in the measurement, and it is what a benchmark is *for*.
 
-Best-vs-worst spread is **0.061 [0.037, 0.085]**, excluding zero on a paired bootstrap.
+Best-vs-worst spread is **0.082 [0.070, 0.095]**, excluding zero on a paired bootstrap.
 
-Note hybrid takes the best **MRR@10** (0.477) while keyword takes the best **nDCG@10** (0.238) —
-hybrid puts a relevant document at the top more often, keyword fills the first ten better. Worth
-carrying into the real evaluation rather than collapsing to one number.
+Hybrid leads on nDCG@10, MRR@10, R@5 and R@10; semantic takes Success@1. Hybrid beating both legs
+here is consistent with the Phase 8 finding that blending helps when neither leg dominates — and on
+this corpus neither does, because the disjoint vocabularies split the classes cleanly between them.
 
 ## 5. The gate
 
@@ -121,10 +140,10 @@ made the gate ceremonial — and this project already found one check that print
 
 ## 7. What this does not do
 
-1. **Documents produce 1.00 chunks each.** They run ~100–150 words against a ~180-word chunk
-   target, so chunking never splits and the corpus exercises document-level retrieval only. The
-   production path chunks, correlates the two legs by chunk id, then de-duplicates to documents —
-   none of which is under test here.
+1. ~~**Documents produce 1.00 chunks each.**~~ **Fixed** before scaling — 2.25 chunks per document,
+   369-word median, so the production chunk-correlate-de-duplicate path is now exercised. Recorded
+   because it changed which strategy wins (§4), and because the fix multiplied embedding cost by
+   roughly four, which propagates to every rung of the scale curve.
 2. **No user-voice documents.** Support tickets are written as agent summaries in engineering voice,
    because a ticket realised from the same `userPhrases` a query uses would contain the query
    verbatim and restore the circularity. Real knowledge bases *do* contain user-voice text sitting

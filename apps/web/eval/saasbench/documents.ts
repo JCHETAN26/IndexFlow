@@ -67,7 +67,77 @@ export const AUTHORITATIVE: Record<string, DocType> = {
 
 const pad = (n: number) => String(n).padStart(5, "0");
 
-function incidentReport(s: Scenario): { title: string; body: string; fileType: "md" } {
+/**
+ * Additional engineering-voice narrative, so a document is long enough to chunk.
+ *
+ * Without this every document produced exactly **1.00 chunks**, which quietly removed the
+ * production retrieval path from the benchmark: IndexFlow retrieves chunks, correlates the two legs
+ * by chunk id, blends, and only then de-duplicates to documents. At one chunk per document that
+ * entire mechanism is a no-op and the benchmark measures document-level retrieval instead. Real
+ * runbooks and postmortems are also not 120 words long.
+ *
+ * The prose restates scenario context rather than padding with neutral filler. Padding identical
+ * across the corpus would dilute every document equally and waste the chunk budget; restating the
+ * service, build and signature carries the discriminating signal into the later chunks, which is
+ * what real documents do.
+ *
+ * Engineering voice only — this text must never borrow from the query-side vocabulary.
+ */
+function narrative(s: Scenario, rng: Rng): string {
+  const detection = rng.pick([
+    `Detection came from the ${s.environment} signature dashboard rather than from an alert threshold. ` +
+      `Volume for \`${s.errorCode}\` on ${s.service} rose steadily for several minutes before it crossed ` +
+      `any configured trigger, which is why the owning team picked it up by inspection first. The ` +
+      `ninety-fifth percentile for the affected path had been stable near ${s.baselineMs} ms for the ` +
+      `preceding fortnight, so the departure was unambiguous once somebody looked directly at it.`,
+    `The condition was first visible in the ${s.environment} traces for ${s.service}, where the share of ` +
+      `spans terminating in \`${s.errorCode}\` climbed from background levels to a substantial fraction of ` +
+      `traffic on ${s.platform}. Percentile latency for the same path moved off its ${s.baselineMs} ms ` +
+      `baseline in the same window, which tied the two observations together without further work.`,
+  ]);
+
+  const scope = rng.pick([
+    `Scope was limited to ${s.platform} callers of ${s.service} in ${s.environment}. Other client surfaces ` +
+      `continued to be served normally throughout, and no adjacent component reported a correlated ` +
+      `change. Traffic on builds earlier than ${s.affectedVersion} was unaffected, which localised the ` +
+      `regression to that release rather than to infrastructure beneath it.`,
+    `Only ${s.platform} traffic against ${s.service} was implicated. The ${s.environment} deployment carrying ` +
+      `${s.affectedVersion} showed the behaviour; hosts still serving the preceding build did not, and that ` +
+      `difference held for the whole period under review. Neighbouring components stayed within their ` +
+      `usual bounds, so no shared dependency was implicated.`,
+  ]);
+
+  const mechanism =
+    `The mechanism is worth stating precisely, because the surface symptom admits more than one ` +
+    `explanation. ${s.rootCause}. Once that is understood the observed shape follows directly: the ` +
+    `ninety-fifth percentile moved from ${s.baselineMs} ms to roughly ${s.degradedMs} ms, and the ` +
+    `signature raised to callers was \`${s.errorCode}\` rather than a generic failure, because the ` +
+    `condition was detected inside the component rather than at its edge.`;
+
+  const contributing = rng.pick([
+    `Two contributing factors are recorded. The configured allowance of ${s.quantity.value} ` +
+      `${s.quantity.unit} left no headroom for the additional work the regression created, so a condition ` +
+      `that might have degraded gracefully instead surfaced to callers. And the change reached ` +
+      `${s.environment} without a soak against representative ${s.platform} traffic, which is where the ` +
+      `behaviour would have been visible before customers saw it.`,
+    `The allowance for this component, ${s.quantity.value} ${s.quantity.unit}, is sized for ordinary ` +
+      `operation and was consumed quickly once the regression was in place. That is a contributing ` +
+      `factor rather than a cause: correcting the allowance alone would have deferred the failure ` +
+      `rather than removed it. Owning team ${s.team} holds the follow-up for both.`,
+  ]);
+
+  const remediation =
+    `Remediation: ${s.mitigation}. That shipped in ${s.resolvedVersion}. Verification was a return of ` +
+    `the ninety-fifth percentile toward ${s.baselineMs} ms on ${s.platform}, together with signature ` +
+    `volume for \`${s.errorCode}\` falling back to background. Both were confirmed in ${s.environment} ` +
+    `before the incident was closed by ${s.team}.`;
+
+  return [detection, scope, mechanism, contributing, remediation].join("\n\n");
+}
+
+
+
+function incidentReport(s: Scenario, rng: Rng): { title: string; body: string; fileType: "md" } {
   return {
     title: `${s.id} — ${s.service} degradation on ${s.platform}`,
     fileType: "md",
@@ -93,11 +163,15 @@ the condition persisted. Configured allowance at the time was ${s.quantity.value
 ## Mitigation
 
 ${s.mitigation}. Carried in build ${s.resolvedVersion}.
+
+## Detail
+
+${narrative(s, rng)}
 `,
   };
 }
 
-function postmortem(s: Scenario): { title: string; body: string; fileType: "md" } {
+function postmortem(s: Scenario, rng: Rng): { title: string; body: string; fileType: "md" } {
   return {
     title: `Postmortem: ${s.service} ${s.errorCode} (${s.id})`,
     fileType: "md",
@@ -120,11 +194,14 @@ signature volume was correlated against the deploy.
 
 ${s.mitigation}. Shipped in ${s.resolvedVersion}. The operating allowance for this component is
 ${s.quantity.value} ${s.quantity.unit}.
+## Detail
+
+${narrative(s, rng)}
 ${s.superseded ? `\n> **Superseded.** This account is retained for history. Current guidance is in ${s.supersededBy}.\n` : ""}`,
   };
 }
 
-function runbook(s: Scenario): { title: string; body: string; fileType: "md" } {
+function runbook(s: Scenario, rng: Rng): { title: string; body: string; fileType: "md" } {
   return {
     title: `Runbook: ${s.domain} degradation on ${s.service}`,
     fileType: "md",
@@ -146,6 +223,10 @@ ${s.rootCause}.
 3. Check the configured allowance; it should read ${s.quantity.value} ${s.quantity.unit}.
 4. ${s.mitigation}.
 5. Verify recovery toward ${s.baselineMs} ms before standing down.
+
+## Background
+
+${narrative(s, rng)}
 
 ## Escalation
 
@@ -190,7 +271,7 @@ function standupNotes(s: Scenario, rng: Rng): { title: string; body: string; fil
   };
 }
 
-function productSpec(s: Scenario): { title: string; body: string; fileType: "md" } {
+function productSpec(s: Scenario, rng: Rng): { title: string; body: string; fileType: "md" } {
   return {
     title: `${s.service} — operating limits and behaviour`,
     fileType: "md",
@@ -210,6 +291,10 @@ The ninety-fifth percentile target for this component is ${s.baselineMs} ms on $
 ${s.rootCause}. Handled by: ${s.mitigation}.
 
 Owning team ${s.team}. Current from build ${s.resolvedVersion}.
+
+## Detail
+
+${narrative(s, rng)}
 `,
   };
 }
@@ -274,18 +359,21 @@ Verification
 Resolution offered
   ${s.mitigation}. Available from ${s.resolvedVersion}.
 
+Investigation notes
+  ${narrative(s, rng)}
+
 Linked incident: ${s.id}. Routed to ${s.team}.
 `,
   };
 }
 
 const BUILDERS: Record<DocType, (s: Scenario, rng: Rng) => { title: string; body: string; fileType: SaasDoc["fileType"] }> = {
-  "incident-report": (s) => incidentReport(s),
-  postmortem: (s) => postmortem(s),
-  runbook: (s) => runbook(s),
+  "incident-report": (s, r) => incidentReport(s, r),
+  postmortem: (s, r) => postmortem(s, r),
+  runbook: (s, r) => runbook(s, r),
   "release-notes": (s) => releaseNotes(s),
   "standup-notes": (s, r) => standupNotes(s, r),
-  "product-spec": (s) => productSpec(s),
+  "product-spec": (s, r) => productSpec(s, r),
   "api-error-doc": (s) => apiErrorDoc(s),
   "deployment-record": (s, r) => deploymentRecord(s, r),
   "support-escalation": (s, r) => supportEscalation(s, r),
