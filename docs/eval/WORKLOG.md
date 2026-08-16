@@ -1751,3 +1751,81 @@ That is the same defect three times in one benchmark's life: 9b had it across st
 fixed it across runs, and it still came back across concurrency levels. The lesson is not "be more
 careful" — it is that a benchmark needs an instrument that fails loudly, because the failures look
 exactly like results.
+
+---
+
+## 2026-08-16 — Remediation Phases 2 and 3: SaaSBench, and five rejections
+
+Built the synthetic SaaS benchmark and the gate that decides whether it is worth scaling. **The gate
+rejected the generator five times.** Every rejection was a construction defect producing
+plausible-looking retrieval numbers, and no threshold was moved to make any of them pass.
+
+### Pre-registered
+
+That a generator writing both documents and queries would produce a saturated benchmark unless the
+two vocabularies were forced apart, and that the failure would look like success — every strategy
+near 0.95, nothing distinguishable.
+
+**Half right, and wrong about the direction.** The disjoint vocabularies worked: nothing came close
+to saturation, and the ceiling check never fired once. Every failure was at the *other* end — scores
+so low that the answerability floor tripped. I had built the gate two-sided on general principle,
+and the side I thought was decorative is the side that did all the work.
+
+### What the failures actually were
+
+```
+1  R@5 2.2% beside Success@1 39.7%   grade-1 peers inflated the relevant set to a median of
+                                     72 documents, capping R@5 near 7% by construction
+2  paraphrase 0.022                  "my phone freezes while I am writing a note" names no
+                                     incident: ~8 core scenarios share each concept AND its
+                                     root-cause phrasings
+3  everything pinned near 0.11       two of four near-miss siblings shared BOTH service and
+                                     platform with their core — a coin flip, not a hard negative
+4  identifier 0.189 for BM25         error codes repeat across up to 6 core scenarios, so the
+                                     class had several correct answers and one graded
+5  version 0.041, multi-doc 0.034    anchored on service alone while paraphrase and
+                                     troubleshooting anchored on service and platform
+```
+
+Defects 1, 3 and 4 are one error wearing three hats: **the correct answer was not determined by the
+information the query carried.** Reading those numbers as "SaaSBench is brutally hard" was tempting
+every single time, and would have shipped four contaminated artifacts into the 100K run.
+
+### The result
+
+```
+strategy    nDCG@10   MRR@10   Success@1        by class (nDCG@10, hybrid)
+  keyword     0.238    0.409     28.7%            identifier      0.366  <- keyword 0.868
+  semantic    0.178    0.435     28.5%            hard-negative   0.232  <- semantic wins
+  hybrid      0.229    0.477     28.4%            troubleshooting 0.181  <- semantic wins
+
+spread best-worst 0.061 [0.037, 0.085], excludes zero
+```
+
+Lexical retrieval owns the classes where tokens match; dense owns every class where query and
+document say the same thing in different words. That is the disjoint-vocabulary design appearing in
+the measurement rather than in a comment. Hybrid takes the best MRR while keyword takes the best
+nDCG — it puts a relevant document at the top more often, keyword fills the first ten better.
+
+### On not moving the floor
+
+After failure 1 the obvious move was to drop the 0.15 answerability floor. It would have been
+defensible-sounding — the corpus *is* hard by construction — and it would have made the gate
+ceremonial. This repo already found one check that printed a hardcoded pass regardless of what
+happened. The floor stayed, and it found four more real defects.
+
+I did prepare an argument for changing *which* strategy the floor applies to — answerability is a
+property of the benchmark, so it is demonstrated if the best strategy clears it, and requiring every
+leg to clear forbids a legitimately lexical-only class. That reasoning still holds, and it was never
+needed: fixing the fifth defect lifted every leg above the floor on its own. It is recorded here
+rather than applied, because a threshold change nobody needs is a threshold change nobody should
+make.
+
+### What this does not say
+
+Documents produce **1.00 chunks each**, so the production chunk-correlate-deduplicate path is not
+under test — this is document-level retrieval. Support tickets are engineering-voice, not
+user-voice, so the corpus is *harder* than reality and scores here understate production. qrels are
+true by construction, not by judgment. And only the 3,400-document rung is measured: nothing here
+says the separation survives to 100K, which is exactly what the scale curve is for and exactly why
+it was worth gating before spending on it.
