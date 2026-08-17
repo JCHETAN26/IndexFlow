@@ -21,13 +21,38 @@ scenarios with the same fault, every anchored query has same-anchor competitors,
 query shares discriminative vocabulary with its target's documents. 150 core scenarios across 30
 anchors, exactly 5 per anchor.
 
-**Open**: the keyword-leg ablation trips both warning thresholds — anchor-only reaches 95% of full
-(0.150 vs 0.158) and anchor-masked collapses to 9% (0.014). I do not read that as entity leakage,
-because the vocabularies are deliberately disjoint and BM25 therefore has nothing *but* the anchor;
-anchor-only exceeding full simply means symptom words are noise to a lexical matcher. The decisive
-test is the same ablation on the **dense** leg, which was not part of the original implementation
-and is being measured now. Until it lands, benchmark validity is "structurally sound, one
-diagnostic outstanding" rather than settled.
+### Anchor ablation — supporting evidence, not a validity gate
+
+Run on both legs over the natural-language classes (tune, n=119). **These are diagnostics. They are
+not thresholds, they gate nothing, and no benchmark parameter is set from them.**
+
+| leg | form | nDCG@10 | MRR@10 | vs full |
+|---|---|---|---|---|
+| keyword | full | 0.149 | 0.349 | |
+| keyword | anchor-only | 0.136 | 0.359 | 91.3% |
+| keyword | anchor-masked | 0.010 | 0.043 | 6.6% |
+| semantic | full | **0.259** | 0.638 | |
+| semantic | anchor-only | 0.075 | 0.207 | 29.1% |
+| semantic | anchor-masked | 0.055 | 0.135 | 21.4% |
+
+What this supports, stated precisely:
+
+- **Full dense retrieval substantially outperforms anchor-only dense retrieval** (0.259 vs 0.075).
+- **Therefore the anchor alone does not account for semantic performance** — most of what the dense
+  leg achieves on these classes is unavailable from the entity name by itself.
+- **Anchor-masked semantic remains stronger than anchor-masked keyword** (0.055 vs 0.010), showing
+  residual semantic signal once the entity is removed.
+
+What this does **not** support:
+
+- **The three forms are not additive components.** FULL, ANCHOR-ONLY and ANCHOR-MASKED are three
+  different queries run separately, not a decomposition of one. Nothing here licenses "the anchor
+  contributes X and the semantics contribute Y", and the numbers should never be subtracted from
+  one another to apportion credit.
+- The keyword-leg pattern (anchor-only at 91% of full) is **not** evidence of entity leakage in the
+  benchmark. The vocabularies are deliberately disjoint, so BM25 has nothing but the anchor
+  available; anchor-only matching or exceeding full simply means symptom words are noise to a
+  lexical matcher.
 
 ## Q2 · What is the clean shipping baseline?
 

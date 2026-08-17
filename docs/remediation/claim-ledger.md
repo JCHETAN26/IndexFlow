@@ -147,7 +147,7 @@ Both remain in the repository as recorded negative results. Neither may be quote
 
 | Item | Status |
 |---|---|
-| Dense-leg anchor ablation | **IN PROGRESS** — keyword-leg ablation alone is uninformative by construction |
+| Dense-leg anchor ablation | **MEASURED** — supporting evidence only, not a gate. Full dense 0.259 vs anchor-only 0.075, so the anchor alone does not account for semantic performance; anchor-masked semantic 0.055 exceeds anchor-masked keyword 0.010, showing residual semantic signal. The three forms are separate queries and **must not** be treated as additive components. |
 | Union → cross-encoder reranking | **IN PROGRESS** (depth sweep, tune split) |
 | Identifier fast path | **NOT RUN** — evidence supports evaluating it (keyword MRR 1.000 vs hybrid 0.648) |
 | SaaSBench scale curve to 100K | **BLOCKED** — needs sharded CI embedding |

@@ -39,6 +39,8 @@ import type { SaasDoc } from "./documents";
 
 const DEPTHS = (process.env.SWEEP_DEPTHS ?? "30,50,75,100").split(",").map(Number);
 const MAX_TUNE = Number(process.env.SWEEP_MAX_TUNE ?? 0);
+/** Skip cross-encoding and report candidate ceilings only. Minutes instead of hours. */
+const ORACLE_ONLY = process.env.SWEEP_ORACLE_ONLY === "1";
 const INSERT_BATCH = 500;
 
 class Rollback extends Error {}
@@ -282,7 +284,9 @@ async function main() {
         chunkId: h.chunkId, documentId: h.docId, title: "", fileType: "md", snippet: "", score: h.score, content: h.content,
       }));
       const t = performance.now();
-      const reranked = await rerank(r.query.text, cands as any);
+      // Oracle-only mode leaves candidate order untouched, so the run measures ceilings without
+      // paying for cross-encoding.
+      const reranked = ORACLE_ONLY ? cands : await rerank(r.query.text, cands as any);
       latencies.push(performance.now() - t);
       const seen = new Set<string>(); const out: string[] = [];
       for (const c of reranked) { if (!seen.has(c.documentId)) { seen.add(c.documentId); out.push(c.documentId); } }
@@ -294,12 +298,13 @@ async function main() {
       return oracleOf([...union], qs[i].qrels);
     });
     const oracleNdcg = orc.reduce((a, b) => a + b.ndcg10, 0) / orc.length;
+    const oracleMrr = orc.reduce((a, b) => a + b.mrr10, 0) / orc.length;
     const meanUnion = unionSizes.reduce((a, b) => a + b, 0) / unionSizes.length;
     const delta = bootstrapDelta(m.perQuery, baseline.perQuery);
-    sweep[depth] = { metrics: m, oracleNdcg, meanUnion, rrP50: quantile(latencies, 0.5), rrP95: quantile(latencies, 0.95), delta };
+    sweep[depth] = { metrics: m, oracleNdcg, oracleMrr, meanUnion, rrP50: quantile(latencies, 0.5), rrP95: quantile(latencies, 0.95), delta };
     console.log(
       `    ${String(depth).padStart(5)}   ${meanUnion.toFixed(0).padStart(5)}   ${meanUnion.toFixed(0).padStart(5)}   ` +
-      `${f3(m.ndcg10)}    ${f3(m.mrr10)}   ${pc(m.success1).padStart(6)} ${pc(m.r10).padStart(6)}   ${f3(oracleNdcg).padStart(9)}   ` +
+      `${f3(m.ndcg10)}    ${f3(m.mrr10)}   ${pc(m.success1).padStart(6)} ${pc(m.r10).padStart(6)}   ${f3(oracleNdcg)}/${f3(oracleMrr)}   ` +
       `${quantile(latencies, 0.5).toFixed(0).padStart(6)}   ${quantile(latencies, 0.95).toFixed(0).padStart(6)}`);
     console.log(`            Δ nDCG@10 vs shipping ${f3(delta.value)} [${f3(delta.lo)}, ${f3(delta.hi)}] ${delta.excludesZero ? "excludes zero" : "includes zero"}`);
   }
