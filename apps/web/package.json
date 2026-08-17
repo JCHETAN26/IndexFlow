@@ -46,7 +46,8 @@
     "saasbench:gate": "tsx --env-file=.env eval/saasbench/gate.ts",
     "saasbench:scale": "tsx --env-file=.env eval/saasbench/scale-run.ts",
     "saasbench:diagnose": "tsx --env-file=.env eval/saasbench/diagnose.ts",
-    "saasbench:rerank": "tsx --env-file=.env eval/saasbench/rerank-sweep.ts"
+    "saasbench:rerank": "tsx --env-file=.env eval/saasbench/rerank-sweep.ts",
+    "saasbench:rerank-repr": "tsx --env-file=.env eval/saasbench/rerank-representation.ts"
   },
   "prisma": {
     "schema": "prisma/schema.prisma"
