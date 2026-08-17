@@ -14,7 +14,7 @@ Artifacts in `apps/web/eval/saasbench/results/`.
 
 ## Q1 · Is the benchmark structurally valid?
 
-Yes, with one open question.
+Yes.
 
 All five structural rules pass: no anchor identifies a single scenario, no anchor hosts two
 scenarios with the same fault, every anchored query has same-anchor competitors, and no paraphrase
