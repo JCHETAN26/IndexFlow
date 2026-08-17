@@ -1,0 +1,97 @@
+{
+  "env": {
+    "snapshot": "d3400-s42",
+    "corpusHash": "361c493cc6437a0612294377e4b5a59a0674ba4ecdfd20dd909c76cc9f080589",
+    "queriesHash": "234bb5777c469954abb4dc4f0b78e1262d5a9bd5e8ec94e2a00c0bbf2539def4",
+    "qrelsHash": "a3ec66a7206b6515a47455b6c780d276c866c57e9b550c7d7ac44c5bb5d20f10",
+    "generatorVersion": "1.0.0",
+    "seed": 42,
+    "documents": 3400,
+    "chunks": 7657,
+    "chunksPerDocument": 2.2520588235294117,
+    "tuneQueries": 227,
+    "testQueries": 894,
+    "candidateChunkDepth": 300,
+    "embeddingModel": "Xenova/all-MiniLM-L6-v2",
+    "hybridWeight": 0.45,
+    "gitSha": "b1763be8c163c922b681dd0d5e8b2153d26379d8"
+  },
+  "collapse": {
+    "keyword": {
+      "10": {
+        "mean": 9.979865771812081,
+        "median": 10,
+        "p25": 10,
+        "p75": 10,
+        "p95": 10,
+        "min": 8,
+        "max": 10
+      },
+      "30": {
+        "mean": 29.69351230425056,
+        "median": 30,
+        "p25": 30,
+        "p75": 30,
+        "p95": 30,
+        "min": 24,
+        "max": 30
+      },
+      "50": {
+        "mean": 49.04250559284117,
+        "median": 50,
+        "p25": 49,
+        "p75": 50,
+        "p95": 50,
+        "min": 38,
+        "max": 50
+      },
+      "100": {
+        "mean": 95.67225950782998,
+        "median": 97,
+        "p25": 93,
+        "p75": 100,
+        "p95": 100,
+        "min": 73,
+        "max": 100
+      }
+    },
+    "semantic": {
+      "10": {
+        "mean": 9.956375838926174,
+        "median": 10,
+        "p25": 10,
+        "p75": 10,
+        "p95": 10,
+        "min": 7,
+        "max": 10
+      },
+      "30": {
+        "mean": 29.380313199105146,
+        "median": 30,
+        "p25": 30,
+        "p75": 30,
+        "p95": 30,
+        "min": 19,
+        "max": 30
+      },
+      "50": {
+        "mean": 48.072706935123044,
+        "median": 50,
+        "p25": 47,
+        "p75": 50,
+        "p95": 50,
+        "min": 35,
+        "max": 50
+      },
+      "100": {
+        "mean": 92.98322147651007,
+        "median": 96,
+        "p25": 87,
+        "p75": 100,
+        "p95": 100,
+        "min": 69,
+        "max": 100
+      }
+    }
+  }
+}

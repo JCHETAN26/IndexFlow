@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { findLexiconLeaks, CONCEPTS } from "../../eval/saasbench/lexicon";
 import { buildSnapshot } from "../../eval/saasbench/generate";
 import { Rng } from "../../eval/saasbench/rng";
+import { checkStructure } from "../../eval/saasbench/structural";
 
 /**
  * The generator's own invariants.
@@ -135,5 +136,36 @@ describe("saasbench frozen benchmark", () => {
     expect(snap.manifest.queriesHash, "query set drifted from the frozen benchmark").toBe(frozen.queriesHash);
     expect(snap.manifest.qrelsHash, "relevance judgments drifted from the frozen benchmark").toBe(frozen.qrelsHash);
     expect(snap.manifest.queries.total).toBe(frozen.queries);
+  }, 120_000);
+});
+
+describe("saasbench structural gates", () => {
+  /**
+   * These encode the pre-registered anchor rule and run without any service, so the defect class
+   * that took the metric gate five expensive runs to surface now fails in milliseconds — and
+   * unambiguously, rather than through a score that reads equally well as "hard" or "broken".
+   */
+  it("satisfies every structural rule", async () => {
+    const snap = await buildSnapshot(3400, 42);
+    const violations = checkStructure(snap.scenarios, snap.documents, snap.queries);
+    expect(
+      violations.map((v) => `${v.rule} (${v.count}): ${v.examples[0] ?? ""}`),
+      "structural rules violated; see eval/saasbench/structural.ts for what each one protects",
+    ).toEqual([]);
+  }, 120_000);
+
+  it("gives every anchor an ambiguity neighbourhood", async () => {
+    // The property that keeps the benchmark from degenerating into entity lookup: a service name
+    // must narrow the corpus, never resolve it.
+    const snap = await buildSnapshot(3400, 42);
+    const core = snap.scenarios.filter((s) => s.kind === "core");
+    const byAnchor = new Map<string, number>();
+    for (const s of core) {
+      const k = `${s.service}|${s.platform}`;
+      byAnchor.set(k, (byAnchor.get(k) ?? 0) + 1);
+    }
+    const singletons = [...byAnchor.entries()].filter(([, n]) => n < 2);
+    expect(singletons.map(([k]) => k)).toEqual([]);
+    expect(Math.min(...byAnchor.values())).toBeGreaterThanOrEqual(2);
   }, 120_000);
 });

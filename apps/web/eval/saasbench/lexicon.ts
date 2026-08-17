@@ -383,8 +383,16 @@ export const CONCEPTS: readonly Concept[] = [
   },
 ];
 
-/** Words too common to count as evidence of lexical leakage. */
-const STOPWORDS = new Set(
+/**
+ * Words too common to count as evidence of lexical leakage.
+ *
+ * Exported so the structural gates use the SAME definition of "content word". Maintaining two lists
+ * meant the concept check and the corpus check disagreed about whether "two" and "once" carried
+ * signal, and the stricter one reported 41 leaks that were coincidental function-word overlap
+ * ("two of us were working at once" against "the two observations together") rather than the
+ * planted-text leakage the rule exists to catch.
+ */
+export const STOPWORDS = new Set(
   ("a an and are as at be been before but by can did do does for from had has have how i if in into is it its me " +
     "my no not of on one only or our out over so than that the their them then there these they this to two up " +
     "was we were what when where which while who why will with without you your it's we're i'm us get got make " +

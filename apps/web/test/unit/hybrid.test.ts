@@ -20,21 +20,31 @@ describe("blendHybrid", () => {
     expect(out[1].id).toBe("b");
   });
 
-  it("KNOWN WART: drops each leg's lowest hit, because min-max sends it to exactly 0", () => {
-    // Min-max normalisation maps the minimum of a list to 0, and blendHybrid discards anything
-    // scoring 0. So the worst candidate in a leg survives only if the other leg also found it.
-    // The `score > 0` filter was added to make weight=1 behave as keyword-only; dropping the
-    // tail candidate is an unintended side effect of that, not a deliberate ranking decision.
+  it("keeps each leg's lowest hit, which min-max normalises to zero", () => {
+    // Formerly pinned as a KNOWN WART. Min-max sends the minimum of a list to exactly 0, and the
+    // blend used to discard anything scoring 0 — so a candidate that WAS retrieved but ranked last
+    // was treated identically to one that was never retrieved. Measured on SaaSBench, that silently
+    // removed 5.68 candidates per query (up to 146).
     //
-    // Pinned rather than fixed: changing it changes retrieval ranking and therefore the
-    // published MRR, which is a deliberate change to make and measure, not a side effect of
-    // adding tests. Recorded in docs/ROADMAP.md.
+    // Fixed by deciding membership from retrieval rather than from score. The quality impact at
+    // top-10 was exactly zero (Δ nDCG@10 0.000 [0.000, 0.000], n=894) because the dropped
+    // candidates all sit deep in the tail — this is a correctness fix, and no improvement is
+    // claimed for it. It matters for anything consuming candidate depth, such as reranking.
     const out = blendHybrid([s("a", 9), s("b", 3)], []);
-    expect(out.map((r) => r.id)).toEqual(["a"]);
+    expect(out.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(out[1].score).toBe(0);
 
-    // It survives when the other leg also found it — which is why this rarely shows up.
     const rescued = blendHybrid([s("a", 9), s("b", 3)], [s("b", 0.8)]);
     expect(rescued.map((r) => r.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("still treats the weight endpoints as single-leg retrieval", () => {
+    // The `score > 0` filter existed to make weight=1 behave as keyword-only. That property has to
+    // survive the fix, or the endpoints stop being honest.
+    const kwOnly = blendHybrid([s("kw", 5)], [s("sm", 0.9)], 1);
+    expect(kwOnly.map((r) => r.id)).toEqual(["kw"]);
+    const smOnly = blendHybrid([s("kw", 5)], [s("sm", 0.9)], 0);
+    expect(smOnly.map((r) => r.id)).toEqual(["sm"]);
   });
 
   it("unions ids found by only one leg", () => {

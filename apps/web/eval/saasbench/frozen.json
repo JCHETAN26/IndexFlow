@@ -1,10 +1,14 @@
 {
   "docs": 3400,
   "seed": 42,
-  "generatorVersion": "1.0.0",
-  "corpusHash": "6e9768ef7407ba95eb6396aaf7745d8f6b2a82704343a3c0420fd7570d595bd2",
-  "queriesHash": "b875fd2865b9398ca3c56929ee162344e3faa31497c723107ea25fe8f20449e2",
-  "qrelsHash": "d1be3733131b7fcfa170579987f5b1ed497d6dca8c6230322fd70821f1929ae2",
-  "queries": 1130,
-  "note": "Regenerate with: pnpm saasbench:generate -- --docs 3400 --seed 42"
+  "generatorVersion": "2.0.0",
+  "corpusHash": "361c493cc6437a0612294377e4b5a59a0674ba4ecdfd20dd909c76cc9f080589",
+  "queriesHash": "234bb5777c469954abb4dc4f0b78e1262d5a9bd5e8ec94e2a00c0bbf2539def4",
+  "qrelsHash": "a3ec66a7206b6515a47455b6c780d276c866c57e9b550c7d7ac44c5bb5d20f10",
+  "queries": 1129,
+  "note": "Regenerate: pnpm saasbench:generate -- --docs 3400 --seed 42",
+  "supersedes": [
+    "1.0.0-collided (artificially low, unanswerable queries)",
+    "1.0.0-unique (artificially high, anchor was a document identifier)"
+  ]
 }

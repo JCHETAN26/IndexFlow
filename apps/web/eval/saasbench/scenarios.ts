@@ -30,11 +30,63 @@
 import { CONCEPTS, type Concept } from "./lexicon";
 import type { Rng } from "./rng";
 
-export const SERVICES = [
-  "editor-sync", "editor-render", "auth-gateway", "session-store", "search-api", "search-indexer",
-  "billing-core", "billing-webhooks", "upload-intake", "media-transform", "export-worker",
-  "collab-relay", "notify-dispatch", "quota-meter", "flag-service", "trace-collector",
+/**
+ * Service names, built as a cross product so there are enough of them to give every core scenario
+ * its OWN service.
+ *
+ * This is not cosmetic. Queries are anchored on (service, platform), and an anchor is only useful if
+ * it names one incident. Picking both independently from 16 services and 4 platforms gives 64
+ * combinations for 150 core scenarios, so by pigeonhole most anchors were shared — measured, 135 of
+ * 150 core scenarios sat on an anchor held by another, the worst holding six, and 18 collided on
+ * service, platform AND fault, which makes their queries unanswerable outright.
+ *
+ * The effect on the numbers was large and looked like weak retrieval: a query matching five
+ * scenarios lexically has ~45 anchor-matching documents of which 9 are relevant, and the observed
+ * R@10 of 24% is almost exactly that ratio — the score was anchor-matching alone, with the
+ * symptom-to-root-cause bridge contributing almost nothing on top of it.
+ */
+const AREAS = [
+  "editor", "auth", "search", "billing", "upload", "media", "export", "collab", "notify", "quota",
+  "flag", "trace", "session", "index", "sync", "queue", "cache", "deploy", "audit", "report",
 ] as const;
+const FUNCTIONS = ["api", "worker", "gateway", "store", "relay", "dispatch", "scheduler", "ingest"] as const;
+
+/** 160 names. Anchors are allocated from these; several core scenarios deliberately share one. */
+export const CORE_SERVICES: readonly string[] = AREAS.flatMap((a) => FUNCTIONS.map((f) => `${a}-${f}`));
+
+/**
+ * How many core scenarios share one (service, platform) anchor. **Pre-registered structural rule,
+ * fixed before measuring — not tuned to whichever value produces the nicest number.**
+ *
+ * There are two ways to get this wrong and this project has now made both.
+ *
+ *   Too few per anchor (the limit being one) makes the service name a unique token. BM25 finds it
+ *   and wins without understanding anything: measured at 0.659 nDCG@10 on the *paraphrase* class,
+ *   which is built on a vocabulary deliberately disjoint from the documents. That is entity lookup
+ *   wearing a retrieval result's clothes.
+ *
+ *   Too many per anchor, with faults repeating inside the group, makes the query unanswerable —
+ *   the earlier defect, where 8 scenarios shared a concept and no retriever could be right.
+ *
+ * The middle is an ambiguity neighbourhood: the anchor narrows the corpus to a handful of
+ * candidates, and the symptom-to-root-cause bridge decides which one. Every scenario on an anchor
+ * carries a DISTINCT fault, so the group is resolvable in principle — and every query therefore has
+ * ANCHOR_MULTIPLICITY-1 same-anchor hard negatives for free, which is stronger than any sibling the
+ * generator could manufacture.
+ */
+export const ANCHOR_MULTIPLICITY = 5;
+
+/**
+ * Services used ONLY by near-miss siblings and filler. Disjoint from CORE_SERVICES, so a sibling
+ * can never land on an anchor belonging to a different core scenario and pollute its queries.
+ */
+export const DISTRACTOR_SERVICES: readonly string[] = [
+  "edge-proxy", "asset-cdn", "mail-relay", "sms-gateway", "geo-resolver", "lang-detect",
+  "thumb-cache", "ledger-sync", "webhook-fanout", "schema-registry", "rate-broker", "blob-vault",
+];
+
+/** Retained for callers that just want a name; core identity is allocated in generateScenarios. */
+export const SERVICES: readonly string[] = [...CORE_SERVICES, ...DISTRACTOR_SERVICES];
 
 export const PLATFORMS = ["iOS", "Android", "web", "desktop"] as const;
 export const ENVIRONMENTS = ["production", "staging", "canary"] as const;
@@ -142,7 +194,7 @@ function baseScenario(rng: Rng, concept: Concept, seq: number, kind: Scenario["k
     kind,
     conceptId: concept.id,
     domain: concept.domain,
-    service: rng.pick(SERVICES),
+    service: rng.pick(DISTRACTOR_SERVICES),
     platform: rng.pick(PLATFORMS),
     environment: rng.pick(ENVIRONMENTS),
     team: rng.pick(TEAMS),
@@ -193,7 +245,9 @@ function hardNegativesFor(rng: Rng, core: Scenario, concept: Concept, startSeq: 
     errorCode: core.errorCode,
   });
 
-  const otherService = rng.pick(SERVICES.filter((s) => s !== core.service));
+  // Distractor pool only: taking another CORE service would put this sibling on that core's
+  // anchor and corrupt its queries.
+  const otherService = rng.pick(DISTRACTOR_SERVICES.filter((s) => s !== core.service));
   out.push({
     ...baseScenario(rng, concept, seq++, "hard-negative"),
     nearId: core.id,
@@ -280,9 +334,30 @@ export function generateScenarios(rng: Rng, coreCount: number, fillerCount: numb
   let seq = 0;
 
   const coreRng = rng.fork("core");
+  // Anchors are (service, platform) pairs, each hosting ANCHOR_MULTIPLICITY core scenarios whose
+  // faults are all different. Consecutive scenarios take consecutive concepts, and the group size is
+  // far below the concept count, so distinctness within a group is structural rather than hoped for.
+  const anchors = coreRng.shuffle(
+    CORE_SERVICES.flatMap((svc) => PLATFORMS.map((platform) => ({ svc, platform }))),
+  );
+  const anchorsNeeded = Math.ceil(coreCount / ANCHOR_MULTIPLICITY);
+  if (anchorsNeeded > anchors.length) {
+    throw new Error(`[saasbench] need ${anchorsNeeded} anchors, only ${anchors.length} available`);
+  }
+  if (ANCHOR_MULTIPLICITY > CONCEPTS.length) {
+    throw new Error(
+      `[saasbench] ANCHOR_MULTIPLICITY ${ANCHOR_MULTIPLICITY} exceeds ${CONCEPTS.length} concepts; ` +
+        `scenarios sharing an anchor could repeat a fault and become indistinguishable.`,
+    );
+  }
   for (let i = 0; i < coreCount; i++) {
     const concept = CONCEPTS[i % CONCEPTS.length];
-    const s = baseScenario(coreRng, concept, seq++, "core");
+    const anchor = anchors[Math.floor(i / ANCHOR_MULTIPLICITY)];
+    const s = {
+      ...baseScenario(coreRng, concept, seq++, "core"),
+      service: anchor.svc,
+      platform: anchor.platform,
+    };
     core.push(s);
     for (const hn of hardNegativesFor(coreRng, s, concept, seq)) {
       hardNegatives.push(hn);

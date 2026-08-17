@@ -1,15 +1,15 @@
 {
-  "generatorVersion": "1.0.0",
+  "generatorVersion": "2.0.0",
   "seed": 42,
-  "createdAt": "2026-08-16T21:08:16.124Z",
+  "createdAt": "2026-08-11T00:35:17.743Z",
   "documents": 3400,
   "scenarios": {
     "core": 150,
-    "hardNegative": 670,
-    "filler": 33
+    "hardNegative": 672,
+    "filler": 29
   },
   "queries": {
-    "total": 1130,
+    "total": 1129,
     "byClass": {
       "identifier": 150,
       "paraphrase": 150,
@@ -19,25 +19,25 @@
       "multi-document": 150,
       "hard-negative": 150,
       "ambiguous": 18,
-      "permission-sensitive": 54,
+      "permission-sensitive": 53,
       "unanswerable": 8
     },
     "tune": 228,
-    "test": 902
+    "test": 901
   },
   "formats": {
     "md": 2257,
-    "txt": 981,
-    "csv": 162
+    "txt": 984,
+    "csv": 159
   },
   "visibility": {
-    "public": 1819,
+    "public": 1816,
     "owner-only": 136,
-    "group": 900,
+    "group": 903,
     "multi-group": 340,
     "user-shared": 205
   },
-  "corpusHash": "6e9768ef7407ba95eb6396aaf7745d8f6b2a82704343a3c0420fd7570d595bd2",
-  "queriesHash": "b875fd2865b9398ca3c56929ee162344e3faa31497c723107ea25fe8f20449e2",
-  "qrelsHash": "d1be3733131b7fcfa170579987f5b1ed497d6dca8c6230322fd70821f1929ae2"
+  "corpusHash": "361c493cc6437a0612294377e4b5a59a0674ba4ecdfd20dd909c76cc9f080589",
+  "queriesHash": "234bb5777c469954abb4dc4f0b78e1262d5a9bd5e8ec94e2a00c0bbf2539def4",
+  "qrelsHash": "a3ec66a7206b6515a47455b6c780d276c866c57e9b550c7d7ac44c5bb5d20f10"
 }

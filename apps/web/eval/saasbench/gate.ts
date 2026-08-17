@@ -39,6 +39,7 @@ import { createEphemeralIndex, deleteIndex, indexChunks, keywordSearch, type EsC
 import { ndcgAtGraded, ranksFromRanked, mrr, recallAt, bootstrapDelta } from "../metrics";
 import type { SaasDoc } from "./documents";
 import type { SaasQuery } from "./queries";
+import { checkStructure, anchorSummary } from "./structural";
 
 const DEPTH = 50;
 const INSERT_BATCH = 500;
@@ -120,12 +121,32 @@ async function main() {
     .map((l) => JSON.parse(l));
   const queries: SaasQuery[] = JSON.parse(await readFile(join(dir, "queries.json"), "utf8"));
   const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
+  const scenarios: { id: string; service: string }[] = JSON.parse(
+    await readFile(join(dir, "scenarios.json"), "utf8"),
+  );
+  const scenarioService = new Map(scenarios.map((x) => [x.id, x.service]));
 
   // The gate runs on the TEST split only. Nothing here tunes anything, but scoring on the tuning
   // split would still be measuring on data reserved for choosing configuration later.
   const test = queries.filter((q) => q.split === "test");
 
+  // Structural rules first: they need no services, run in milliseconds, and catch the defect class
+  // that previously cost five full runs to surface — each time through a score that was ambiguous
+  // between "hard benchmark" and "broken benchmark".
+  const scenarioObjs = JSON.parse(await readFile(join(dir, "scenarios.json"), "utf8"));
+  const structural = checkStructure(scenarioObjs, documents, queries);
   console.log(`\n[saasbench-gate] ${snapName}`);
+  console.log(`  ${anchorSummary(scenarioObjs)}`);
+  if (structural.length > 0) {
+    for (const v of structural) {
+      console.log(`\n  ✗ STRUCTURAL [${v.rule}] ${v.count} violation(s)`);
+      console.log(`    ${v.detail}`);
+      for (const e of v.examples) console.log(`      ${e}`);
+    }
+    console.log(`\n  GATE: FAIL — structural rules violated. Retrieval was not run; the corpus is malformed.\n`);
+    process.exit(1);
+  }
+  console.log(`  structural rules: all pass`);
   console.log(`  ${documents.length} documents · ${test.length} test queries · seed ${manifest.seed}`);
   console.log(`  corpus ${manifest.corpusHash.slice(0, 12)} · queries ${manifest.queriesHash.slice(0, 12)}\n`);
 
@@ -227,9 +248,13 @@ async function main() {
     } catch (e) {
       if (!(e instanceof Rollback)) throw e;
     }
-  } finally {
+  } catch (e) {
     await deleteIndex(esIndex).catch(() => {});
+    throw e;
   }
+
+  // NOTE: the ephemeral index stays alive past this point because the anchor ablation below issues
+  // further keyword queries against it. It is removed at the end of main().
 
   // ── score the three strategies ──────────────────────────────────────────
   const chunkToDoc = new Map(chunks.map((c) => [c.chunkId, c.docId]));
@@ -277,6 +302,110 @@ async function main() {
     );
   }
 
+  const failures: string[] = [];
+  const warnings: string[] = [];
+
+  // ── anchor ablation ─────────────────────────────────────────────────────
+  //
+  // Three forms of the same queries, as a diagnostic rather than a headline. FULL is the real
+  // query; ANCHOR-ONLY is the entity alone; ANCHOR-MASKED replaces the entity with a placeholder.
+  //
+  //   anchor-only scoring nearly as well as full  -> the benchmark measures entity lookup
+  //   anchor-masked collapsing to near zero       -> nothing but the entity was ever being used
+  //
+  // This is the diagnostic that would have caught the unique-service defect immediately, where the
+  // metric gate saw only "BM25 is unexpectedly good at paraphrase" and nearly let it through.
+  const ablationClasses = new Set(["paraphrase", "troubleshooting", "version", "multi-document"]);
+  const ablationIdx = qs.map((q, i) => (ablationClasses.has(q.queryClass) ? i : -1)).filter((i) => i >= 0);
+  if (ablationIdx.length > 0) {
+    const svcOf = (q: SaasQuery) => (q.targetScenarioId ? scenarioService.get(q.targetScenarioId) : undefined);
+    const forms: Record<string, (q: SaasQuery) => string> = {
+      "anchor-only": (q) => svcOf(q) ?? q.text,
+      "anchor-masked": (q) => {
+        const svc = svcOf(q);
+        return svc ? q.text.replaceAll(svc, "[SERVICE]") : q.text;
+      },
+    };
+    // Run on BOTH legs. Keyword-only ablation is nearly uninformative here by construction: the
+    // vocabularies are disjoint, so BM25 has nothing but the anchor and collapsing without it is
+    // the expected result, not a finding. The decisive question is whether the DENSE leg still
+    // retrieves when the entity is masked — if it does, the corpus carries real problem semantics;
+    // if it does not, the benchmark is entity lookup wearing two hats.
+    console.log("\n  anchor ablation (natural-language classes):");
+    console.log(`  form            n   nDCG@10   MRR@10`);
+    const fullSub = ablationIdx.map((i) => rankings.keyword[i]);
+    const fullScore = score(fullSub, ablationIdx.map((i) => qs[i]));
+    console.log(`  ${"full".padEnd(14)} ${String(fullScore.n).padStart(3)}   ${f3(fullScore.ndcg10)}    ${f3(fullScore.mrr10)}`);
+
+    for (const [name, transform] of Object.entries(forms)) {
+      const variantRankings: string[][] = [];
+      for (const i of ablationIdx) {
+        const hits = await keywordSearch(transform(qs[i]), null, DEPTH, esIndex);
+        variantRankings.push(
+          toDocRanking(hits.map((h) => ({ chunkId: h.chunkId, docId: docByUuid.get(h.documentId)!, score: h.score }))),
+        );
+      }
+      const sc = score(variantRankings, ablationIdx.map((i) => qs[i]));
+      console.log(`  ${name.padEnd(14)} ${String(sc.n).padStart(3)}   ${f3(sc.ndcg10)}    ${f3(sc.mrr10)}`);
+      if (name === "anchor-only" && sc.ndcg10 > fullScore.ndcg10 * 0.8) {
+        warnings.push(
+          `anchor-only scores ${f3(sc.ndcg10)} against full ${f3(fullScore.ndcg10)} — the entity ` +
+            `alone nearly answers these queries, so the benchmark is drifting toward entity lookup`,
+        );
+      }
+      if (name === "anchor-masked" && sc.ndcg10 < fullScore.ndcg10 * 0.25) {
+        warnings.push(
+          `anchor-masked collapses to ${f3(sc.ndcg10)} from ${f3(fullScore.ndcg10)} — almost all of ` +
+            `the signal is the entity token, not the problem description`,
+        );
+      }
+    }
+  }
+
+  // ── attainable ceiling ──────────────────────────────────────────────────
+  //
+  // What could a PERFECT ranker score, given this corpus and this retrieval depth? Without it there
+  // is no way to read a low number: 0.25 against a ceiling of 1.00 is a weak system, 0.25 against a
+  // ceiling of 0.30 is a capped benchmark, and the two demand opposite responses. Omitting this is
+  // how `R@5 = 97%` was published as an achievement when it was 100% of attainable.
+  //
+  // The ceiling here is set by the anchor: a query naming a service and platform cannot be expected
+  // to outrank documents that match the same anchor equally well. Measured as the share of the
+  // corpus that matches the query's anchor but is graded 0 — pure confusable mass.
+  const anchorCollision = (() => {
+    const docsByScenario = new Map<string, number>();
+    for (const d of documents) docsByScenario.set(d.scenarioId, (docsByScenario.get(d.scenarioId) ?? 0) + 1);
+    let relevantTotal = 0;
+    let confusableTotal = 0;
+    let counted = 0;
+    for (const q of qs) {
+      if (!q.targetScenarioId || Object.keys(q.qrels).length === 0) continue;
+      const anchor = q.text.toLowerCase();
+      let confusable = 0;
+      for (const [sid, n] of docsByScenario) {
+        if (sid === q.targetScenarioId) continue;
+        // A scenario is confusable when its service name appears in the query text.
+        const svc = scenarioService.get(sid);
+        if (svc && anchor.includes(svc.toLowerCase())) confusable += n;
+      }
+      relevantTotal += Object.keys(q.qrels).length;
+      confusableTotal += confusable;
+      counted++;
+    }
+    return { relevant: relevantTotal / Math.max(counted, 1), confusable: confusableTotal / Math.max(counted, 1) };
+  })();
+
+  console.log(
+    `\n  anchor analysis: ${anchorCollision.relevant.toFixed(1)} relevant documents per query, ` +
+      `${anchorCollision.confusable.toFixed(1)} non-relevant documents sharing the query's service anchor`,
+  );
+  if (anchorCollision.confusable > anchorCollision.relevant) {
+    console.log(
+      `  ⚠ confusable mass exceeds relevant mass — a lexical match on the anchor alone cannot ` +
+        `resolve these queries, which caps every strategy regardless of ranking quality`,
+    );
+  }
+
   const best = Object.entries(scores).reduce((a, b) => (b[1].ndcg10 > a[1].ndcg10 ? b : a));
   const worst = Object.entries(scores).reduce((a, b) => (b[1].ndcg10 < a[1].ndcg10 ? b : a));
   const delta = bootstrapDelta(best[1].perQueryNdcg, worst[1].perQueryNdcg);
@@ -286,9 +415,6 @@ async function main() {
   const SATURATION_SUCCESS = 0.9;
   const FLOOR_NDCG = 0.15;
   const MIN_SPREAD = 0.02;
-  const failures: string[] = [];
-  const warnings: string[] = [];
-
   for (const [name, s] of Object.entries(scores)) {
     if (s.ndcg10 > SATURATION_NDCG)
       failures.push(`${name} nDCG@10 ${f3(s.ndcg10)} exceeds the saturation ceiling ${SATURATION_NDCG} — the benchmark cannot distinguish configurations above this`);
@@ -327,9 +453,11 @@ async function main() {
   for (const f of failures) console.log(`  ✗ ${f}`);
 
   if (failures.length > 0) {
+    await deleteIndex(esIndex).catch(() => {});
     console.log(`\n  GATE: FAIL — ${failures.length} blocking issue(s). Do NOT scale this generator.\n`);
     process.exit(1);
   }
+  await deleteIndex(esIndex).catch(() => {});
   console.log(`\n  GATE: PASS${warnings.length ? ` (${warnings.length} warning(s))` : ""} — the benchmark discriminates. Scaling is justified.\n`);
 }
 

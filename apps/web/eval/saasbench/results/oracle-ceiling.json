@@ -1,0 +1,32 @@
+{
+  "env": {
+    "snapshot": "d3400-s42",
+    "corpusHash": "361c493cc6437a0612294377e4b5a59a0674ba4ecdfd20dd909c76cc9f080589",
+    "queriesHash": "234bb5777c469954abb4dc4f0b78e1262d5a9bd5e8ec94e2a00c0bbf2539def4",
+    "qrelsHash": "a3ec66a7206b6515a47455b6c780d276c866c57e9b550c7d7ac44c5bb5d20f10",
+    "generatorVersion": "1.0.0",
+    "seed": 42,
+    "documents": 3400,
+    "chunks": 7657,
+    "chunksPerDocument": 2.2520588235294117,
+    "tuneQueries": 227,
+    "testQueries": 894,
+    "candidateChunkDepth": 300,
+    "embeddingModel": "Xenova/all-MiniLM-L6-v2",
+    "hybridWeight": 0.45,
+    "gitSha": "b1763be8c163c922b681dd0d5e8b2153d26379d8"
+  },
+  "warning": "ORACLE — NOT DEPLOYABLE, NOT A SYSTEM RESULT, NOT RESUME-SAFE",
+  "oracle": {
+    "30": {
+      "ndcg10": 0.6925305613455722,
+      "mrr10": 0.9955257270693513,
+      "success1": 0.9955257270693513
+    },
+    "100": {
+      "ndcg10": 0.9271708211595154,
+      "mrr10": 1,
+      "success1": 1
+    }
+  }
+}

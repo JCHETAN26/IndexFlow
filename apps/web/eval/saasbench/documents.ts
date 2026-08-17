@@ -109,13 +109,13 @@ function narrative(s: Scenario, rng: Rng): string {
 
   const mechanism =
     `The mechanism is worth stating precisely, because the surface symptom admits more than one ` +
-    `explanation. ${s.rootCause}. Once that is understood the observed shape follows directly: the ` +
+    `explanation. ${s.rootCause}. With that established the observed shape follows directly: the ` +
     `ninety-fifth percentile moved from ${s.baselineMs} ms to roughly ${s.degradedMs} ms, and the ` +
     `signature raised to callers was \`${s.errorCode}\` rather than a generic failure, because the ` +
     `condition was detected inside the component rather than at its edge.`;
 
   const contributing = rng.pick([
-    `Two contributing factors are recorded. The configured allowance of ${s.quantity.value} ` +
+    `A pair of contributing factors are recorded. The configured allowance of ${s.quantity.value} ` +
       `${s.quantity.unit} left no headroom for the additional work the regression created, so a condition ` +
       `that might have degraded gracefully instead surfaced to callers. And the change reached ` +
       `${s.environment} without a soak against representative ${s.platform} traffic, which is where the ` +

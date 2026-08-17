@@ -53,12 +53,20 @@ export function blendHybrid(
 
   const blended: Scored[] = [];
   for (const id of ids) {
-    const score = weight * (kw.get(id) ?? 0) + (1 - weight) * (sm.get(id) ?? 0);
-    // Drop items with no contribution under this weight (e.g. at weight=1 a
-    // semantic-only hit scores 0). Keeps the endpoints honest: weight=1 behaves
-    // like keyword-only, weight=0 like semantic-only.
-    if (score > 0) blended.push({ id, score });
+    // Membership is decided by which leg RETRIEVED the candidate, not by its score.
+    //
+    // This previously tested `score > 0`, which conflated two different questions. Min-max maps the
+    // lowest score in a list to exactly 0, so a candidate that was retrieved but happened to rank
+    // last was indistinguishable from one that was never retrieved at all — and was discarded.
+    // Measured on SaaSBench: 5.68 candidates silently dropped per query, up to 146. The endpoints
+    // still behave exactly as before, because a leg only confers membership when it carries weight.
+    const inKeyword = kw.has(id);
+    const inSemantic = sm.has(id);
+    if (!((weight > 0 && inKeyword) || (weight < 1 && inSemantic))) continue;
+    blended.push({ id, score: weight * (kw.get(id) ?? 0) + (1 - weight) * (sm.get(id) ?? 0) });
   }
-  blended.sort((a, b) => b.score - a.score);
+  // Ties broken by id: once minimums are no longer discarded, several candidates can legitimately
+  // share a score, and a stable order keeps ranking deterministic.
+  blended.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return blended;
 }

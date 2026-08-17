@@ -100,3 +100,56 @@ audit on the first attempt has usually not been audited.
 under exact KNN, against a ladder needing ~225,000 chunks. That is ~2.8 hours of embedding alone and
 does not fit a 45-minute CI job. Requires sharded embedding (the Phase 9a pattern, 12 parallel jobs)
 and ANN above the small rungs with a fresh recall check on this corpus.
+
+---
+
+## Phase 4 — corrected benchmark, baseline and diagnostics
+
+Benchmark: generator `2.0.0`, corpus `361c493cc643`, queries `234bb5777c46`, qrels `6ebf63330749`.
+
+### BENCHMARK_INVALID — never a baseline, never résumé-safe
+
+| Construction | Numbers produced | Why invalid |
+|---|---|---|
+| `1.0.0-collided` | keyword 0.238 / semantic 0.168 / hybrid 0.250 nDCG@10 | 135 of 150 core scenarios shared an anchor and 18 shared anchor AND fault; queries could not identify a target. **Artificially low.** |
+| `1.0.0-unique` | keyword 0.612, hybrid MRR 0.840, keyword MRR 0.896, Success@1 83.5% | One service per scenario made the anchor a document identifier; BM25 reached 0.659 on a disjoint-vocabulary class. **Artificially high.** |
+
+Both remain in the repository as recorded negative results. Neither may be quoted.
+
+### MEASURED — the valid baseline
+
+| Claim | Metric | Evidence | Status | Résumé safe |
+|---|---:|---|---|---|
+| Shipping hybrid on corrected SaaSBench | nDCG@10 0.297 · MRR@10 0.623 · Success@1 45.5% | [`retrieval-diagnostics.md`](retrieval-diagnostics.md) Q2, n=894 test | **MEASURED** | Yes — with corpus size (3,400) stated |
+| Hybrid fusion beats both legs on MRR | 0.623 vs 0.512 / 0.513 | Q2 | **MEASURED** | Yes |
+| Union candidate recall@100 | 84.8% | Q3 | **MEASURED** | Yes |
+| Dense adds ranking signal, not coverage | union R@100 84.8% vs keyword 83.8%; hybrid MRR 0.623 vs keyword 0.512 | Q3 | **MEASURED** | Yes — a good mechanism claim |
+| Chunk multiplicity does not consume candidate capacity | 95.7 unique docs per 100 keyword chunks | Q4 | **MEASURED** | Yes |
+| Tail-drop fix changed no measured quality | Δ nDCG@10 0.000 [0.000, 0.000], n=894 | Q5 | **MEASURED (negative)** | Yes — as a correctness fix, with **no** improvement claimed |
+| Legacy fusion silently dropped candidates | 5.68/query, max 146 | Q5 | **MEASURED** | Yes |
+
+### DIAGNOSTIC ONLY — not deployable, not a system result
+
+| Claim | Metric | Status |
+|---|---:|---|
+| Oracle ceiling over candidate union @30 | nDCG@10 0.693 · MRR@10 0.996 · S@1 99.6% | **DIAGNOSTIC** — uses ground truth |
+| Oracle ceiling over candidate union @100 | nDCG@10 0.927 · MRR@10 1.000 · S@1 100% | **DIAGNOSTIC** — uses ground truth |
+| "Ranking, not retrieval, is the bottleneck" | oracle 0.927 vs shipping 0.297 | **MEASURED as an inference from diagnostics** | 
+
+### REJECTED after measurement
+
+| Experiment | Result | Decision |
+|---|---:|---|
+| Document aggregation C (best chunk + capped support) | +0.038 nDCG [0.020, 0.056] but −0.024 MRR, −3.6pp Success@1 | **Rejected for search ranking** — trades first-result quality for breadth. Retained as a RAG evidence-selection candidate. |
+| Document aggregation B (per-leg best chunk) | +0.004 [0.001, 0.007] | Significant, negligible. Not adopted. |
+
+### NOT RUN / OUTSTANDING
+
+| Item | Status |
+|---|---|
+| Dense-leg anchor ablation | **IN PROGRESS** — keyword-leg ablation alone is uninformative by construction |
+| Union → cross-encoder reranking | **IN PROGRESS** (depth sweep, tune split) |
+| Identifier fast path | **NOT RUN** — evidence supports evaluating it (keyword MRR 1.000 vs hybrid 0.648) |
+| SaaSBench scale curve to 100K | **BLOCKED** — needs sharded CI embedding |
+| Concurrent load / end-to-end latency | **NOT RUN** |
+| RAG evaluation under current architecture | **NOT RUN** — previously withdrawn generation metrics stay withdrawn |
