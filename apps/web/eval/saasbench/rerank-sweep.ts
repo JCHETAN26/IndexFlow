@@ -271,6 +271,10 @@ async function main() {
     const rankings: string[][] = [];
     const unionSizes: number[] = [];
     const latencies: number[] = [];
+    // Progress inside a depth, not just between depths. Cross-encoding a depth takes hours on CPU,
+    // and without this a run that is working normally is indistinguishable from one that has hung —
+    // which is exactly how ~4 hours went by with no way to tell which was happening.
+    let done = 0;
     for (const r of rows) {
       const kwBest = bestChunkPerDoc(r.kw.slice(0, depth));
       const smBest = bestChunkPerDoc(r.sm.slice(0, depth));
@@ -291,6 +295,10 @@ async function main() {
       const seen = new Set<string>(); const out: string[] = [];
       for (const c of reranked) { if (!seen.has(c.documentId)) { seen.add(c.documentId); out.push(c.documentId); } }
       rankings.push(out);
+      if (++done % 25 === 0) {
+        const rate = latencies.reduce((a, b) => a + b, 0) / done;
+        console.log(`${el()}   depth ${depth}: ${done}/${rows.length} queries · ${rate.toFixed(0)} ms/query`);
+      }
     }
     const m = scoreRankings(rankings, qs);
     const orc = rows.map((r, i) => {
