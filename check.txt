@@ -1,0 +1,361 @@
+es. The new result changes the diagnosis quite a bit.
+
+The 0.840 hybrid / 0.896 keyword MRR should not become the new baseline. They demonstrate that the previous answerability defect was fixed, but the unique-service correction introduced a second benchmark artifact: entity leakage. I would mark this run SUPERSEDED / benchmark-invalid for retrieval-quality claims, just as you did with earlier contaminated measurements.
+
+The benchmark now needs a middle-ground anchor design.
+
+What the anchor should do
+
+Think of a service/entity name as a candidate-set narrowing signal, not an answer.
+
+Bad extreme #1:
+
+checkout-service
+→ 80 scenarios
+
+The query does not contain enough information to identify anything.
+
+Bad extreme #2:
+
+checkout-service-482
+→ exactly 1 scenario
+
+BM25 wins by finding the unique token.
+
+What we want is:
+
+checkout-service
+│
+├── payment timeout caused by pool exhaustion
+├── payment timeout caused by upstream 429s
+├── duplicate charge caused by retry bug
+├── checkout latency caused by cache miss storm
+├── failed payment caused by credential expiry
+└── webhook delay caused by queue backlog
+
+Now:
+
+Why do checkout requests hang after traffic spikes even though CPU stays normal?
+
+cannot be solved by matching checkout.
+
+The service token gets retrieval into the right neighborhood; symptom/root-cause understanding determines the winner.
+
+I would change the generator this way
+
+Each anchor/service should deliberately own a small ambiguity neighborhood, perhaps around 4–8 core scenarios.
+
+Do not choose the final number based on whichever gives the nicest nDCG. Pre-register the structural rule and keep it fixed.
+
+For every core scenario:
+
+shared service/entity
++
+distinct failure
++
+distinct root cause
++
+distinct symptom
++
+possibly distinct version/environment/time
+
+And every query needs at least one same-anchor hard negative.
+
+Example:
+
+Target
+service: auth-api
+symptom: users logged out after ~60 minutes
+cause: refresh-token TTL regression
+
+
+Hard negatives
+auth-api + login latency + Redis saturation
+auth-api + 401 after deploy + signing key mismatch
+auth-api + logout loop + cookie SameSite change
+auth-api + mobile login failure + clock skew
+
+Now the shared auth-api token cannot identify the answer.
+
+Add structural gates, not just metric gates
+
+This is the important improvement.
+
+Your previous gates caught defects through retrieval scores, but we can detect this specific problem before running BM25.
+
+For every relevant query, assert things like:
+
+anchor identifies >= N scenarios
+anchor identifies >= N non-relevant documents
+at least one same-anchor hard negative exists
+target is not uniquely identifiable from anchor alone
+
+And for paraphrase/troubleshooting queries:
+
+query ↔ target lexical overlap
+after removing shared entity/anchor terms
+must remain intentionally low
+
+while the query still contains enough semantic information to determine the correct scenario.
+
+That last part prevents returning to the original unanswerability defect.
+
+Add an anchor-ablation diagnostic
+
+I would add three evaluation forms for the relevant classes:
+
+FULL QUERY
+"why is auth-api logging users out after an hour?"
+
+
+ANCHOR ONLY
+"auth-api"
+
+
+ANCHOR MASKED
+"why is [SERVICE] logging users out after an hour?"
+
+These are diagnostics, not separate headline benchmarks.
+
+They tell us:
+
+Anchor-only
+
+How much can the shared entity solve by itself?
+
+It should not identify a unique answer.
+
+Anchor-masked
+
+Can retrieval use the actual problem semantics once the easy entity signal disappears?
+
+This is especially useful for catching exactly what just happened.
+
+If:
+
+Full BM25 MRR       0.90
+Anchor-only MRR     0.85
+Anchor-masked MRR   0.20
+
+then we're measuring entity lookup.
+
+But something like:
+
+Full query          useful
+Anchor only         ambiguous
+Anchor masked       still meaningfully retrievable
+
+is much healthier.
+
+Don't set numbers in advance solely to manufacture sparse/dense separation—the diagnostic should expose what the benchmark actually contains.
+
+This means we should postpone the router
+
+Absolutely.
+
+The earlier router argument was based on:
+
+keyword dominates identifiers
+semantic dominates semantic classes
+
+That evidence is currently contaminated.
+
+So don't build:
+
+identifier → BM25
+troubleshooting → dense
+...
+
+yet.
+
+After the anchor correction we rerun the classes from scratch.
+
+Maybe semantic really dominates paraphrase.
+
+Maybe BM25 remains surprisingly strong.
+
+Maybe hybrid wins.
+
+Whatever the uncontaminated benchmark says becomes the basis for the architecture.
+
+The tail-drop bug is different
+
+This one is independent of SaaSBench.
+
+You have now confirmed the actual production behavior:
+
+min-max normalization
+minimum candidate → 0
+
+
+blend:
+if score > 0
+    keep
+else
+    discard
+
+So yes, that's a genuine retrieval bug.
+
+I would fix it regardless of what SaaSBench eventually scores.
+
+But preserve reproducibility:
+
+legacyMinMaxFusion()
+correctedMinMaxFusion()
+
+in the evaluation harness so the final valid benchmark can measure:
+
+legacy → corrected
+
+rather than losing the before-state.
+
+That could give us a legitimate engineering delta.
+
+The 2.25 chunks/document finding needs one nuance
+
+This is important:
+
+first-occurrence collapse is not necessarily wrong.
+
+If chunks are already sorted by final score, the first occurrence of a document is effectively its highest-ranked chunk.
+
+So this:
+
+chunk A2 score .92
+chunk A1 score .84
+chunk B1 score .80
+
+followed by first-occurrence document dedup gives:
+
+Document A
+Document B
+
+which is equivalent to max-chunk ranking in that simple case.
+
+The bigger problem is what happens before deduplication.
+
+With 2.25 chunks/document:
+
+top 30 chunk candidates
+
+might really contain only:
+
+18 distinct documents
+
+because several candidate slots belong to the same document.
+
+And during fusion a document with many chunks gets more opportunities to:
+
+appear in both retrieval legs;
+consume candidate depth;
+receive high positions;
+crowd other documents out.
+
+That's where I'd experiment.
+
+Document aggregation should become an explicit experiment
+
+Keep current behavior as baseline:
+
+A — chunk fusion → first-occurrence document collapse
+BM25 chunks
+Dense chunks
+↓
+fusion
+↓
+document dedup
+
+Then test:
+
+B — per-leg document aggregation → fusion
+BM25 chunks
+↓
+best chunk/document
+
+
+Dense chunks
+↓
+best chunk/document
+
+
+↓
+document-level fusion
+
+And perhaps:
+
+C — best chunk + capped supporting-chunk evidence
+
+Conceptually:
+
+documentScore =
+bestChunk
++
+small capped contribution from second supporting chunk
+
+This might help multi-section documents without letting a 20-chunk document dominate merely because it has more chunks.
+
+Again: tune split only.
+
+So the plan now becomes
+1. Fix anchor design
+   shared ambiguity neighborhoods
+               ↓
+2. Structural anchor gates
+   + anchor ablation diagnostics
+               ↓
+3. Re-freeze SaaSBench
+               ↓
+4. Run clean baseline
+   BM25 / Dense / Hybrid
+               ↓
+5. Candidate Recall@30/50/100
+   + union oracle ceiling
+               ↓
+6. Fix min-max tail-drop
+   compare legacy vs corrected
+               ↓
+7. Evaluate document aggregation
+   because 2.25 chunks/doc
+               ↓
+8. RRF / weighted RRF
+               ↓
+9. Union → reranker
+               ↓
+10. Only now inspect per-class behavior
+               ↓
+11. Router, ONLY if evidence supports it
+               ↓
+12. Structured BM25 / embeddings if diagnostics support them
+               ↓
+13. Freeze retrieval
+               ↓
+14. held-out test
+               ↓
+15. 100K scale
+               ↓
+16. RAG evaluation
+What I'd want from the next SaaSBench run
+
+Not a particular MRR.
+
+I'd want to see:
+
+Answerability: each query genuinely identifies a scenario given its full information.
+
+Non-triviality: no unique entity token identifies the target.
+
+Hard negatives: same-service siblings compete with the target.
+
+Vocabulary separation: paraphrase remains genuinely paraphrastic after anchor terms are removed.
+
+Retriever diversity: whatever sparse/dense differences appear are caused by retrieval behavior, not generator artifacts.
+
+Stability: no threshold gets relaxed after seeing the result.
+
+If the resulting hybrid MRR is 0.55, fine.
+
+If it's 0.82, also fine.
+
+Once those structural checks pass, then the metric becomes meaningful.
+
+And this is actually improving the IndexFlow story considerably: you've now found both failure directions of synthetic IR benchmark construction—under-specified labels that make retrieval artificially impossible, and unique anchors that make retrieval artificially trivial—before scaling either mistake to 100K. That evaluation-engineering work is arguably more impressive than simply reporting a high MRR.

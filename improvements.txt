@@ -1,0 +1,390 @@
+1. First measure whether the right document is already in the candidate pool
+
+Before optimizing anything, calculate on the tune split:
+
+BM25 Recall@30 / 50 / 100
+Dense Recall@30 / 50 / 100
+Union Recall@30 / 50 / 100
+
+
+Oracle MRR@10 of BM25 ∪ Dense
+Oracle nDCG@10 of BM25 ∪ Dense
+
+This tells us exactly where the loss occurs.
+
+If union Recall@100 is high and oracle MRR is much higher than 0.477, then your retrieval is fine and ranking is weak.
+
+If union recall is low, then fusion/reranking cannot fix everything; you need stronger first-stage retrieval.
+
+This should be the next experiment.
+
+2. Replace the current min-max hybrid with RRF
+
+Your current hybrid does:
+
+BM25 scores
+   ↓
+min-max normalize
+
+
+Dense scores
+   ↓
+min-max normalize
+
+
+0.45 × keyword + 0.55 × semantic
+
+and it has a known bug where the lowest candidate in a leg can disappear because min-max maps it to zero.
+
+I would preserve that as legacy and test:
+
+Legacy min-max
+Corrected min-max
+RRF
+Weighted RRF
+
+RRF is likely a much better fit because BM25 and cosine scores are fundamentally on different distributions.
+
+Conceptually:
+
+score(doc) =
+1 / (60 + BM25_rank)
++
+1 / (60 + dense_rank)
+
+Then tune the RRF constant and weights only on the tune split.
+
+This is probably the lowest-cost/highest-value improvement.
+
+3. Rerank the union, not the already-damaged hybrid shortlist
+
+This is potentially your biggest gain.
+
+You already have a cross-encoder:
+
+Xenova/bge-reranker-base
+
+But right now IndexFlow roughly does:
+
+BM25 top 30
+Dense top 30
+      ↓
+ hybrid fusion
+      ↓
+  top k×2
+      ↓
+  reranker
+
+That's backwards.
+
+If fusion incorrectly pushes a relevant candidate down, the reranker never gets to see it.
+
+Change the experiment to:
+
+BM25 top 30
+      +
+Dense top 30
+      ↓
+deduplicated union
+      ↓
+BGE cross-encoder
+      ↓
+top 10
+
+Then test:
+
+15 + 15
+30 + 30
+50 + 50
+
+I would expect this to be one of the strongest MRR experiments because MRR specifically rewards getting the first correct result closer to rank 1.
+
+4. Build a query router instead of using the same retrieval strategy for every query
+
+Your own benchmark already tells you the answer.
+
+You reported approximately:
+
+Identifier:
+BM25     0.868
+Dense    0.038
+
+while dense wins on:
+
+troubleshooting
+paraphrase
+version
+multi-document
+permission-sensitive
+hard-negative
+
+That means one fixed hybrid weight is structurally wrong.
+
+Build:
+
+query
+  ↓
+query classifier/router
+  ↓
+┌─────────┬─────────┬──────────┐
+│  BM25   │  Dense  │ RRF/Hybrid │
+└─────────┴─────────┴──────────┘
+
+Use only deployable signals such as:
+
+ERR_AUTH_401        → identifier signal
+INC-48291           → identifier signal
+v4.18.3             → version/lexical signal
+
+
+"why is typing slow on iOS?"
+                    → semantic signal
+
+Additional features:
+
+digits
+uppercase tokens
+punctuation
+query length
+error-code regex
+incident/deployment regex
+version pattern
+BM25 score margin
+dense score margin
+top-k overlap
+rank disagreement
+
+Start rule-based. Then try logistic regression or a small tree.
+
+Do not use SaaSBench query-class labels at inference time.
+
+5. Improve Elasticsearch beyond content + title^2
+
+Current keyword retrieval is basically:
+
+content
+title^2
+
+For technical SaaS search, that leaves a lot unused.
+
+Extract and index fields like:
+
+error_code
+incident_id
+deployment_id
+version
+service
+team
+environment
+document_type
+title
+content
+
+Then queries like:
+
+ERR_AUTH_401
+INC-48291
+DEPLOY-2981
+v4.18.3
+
+can receive exact/keyword boosts instead of relying only on generic BM25 tokenization.
+
+A reasonable Elasticsearch query becomes something closer to:
+
+exact identifier match        very high boost
+exact version match           high boost
+title phrase match            medium/high
+title BM25                    medium
+content BM25                  normal
+
+This should especially improve Success@1 for structured technical queries.
+
+6. Add query-time lexical normalization
+
+Technical search benefits enormously from normalizing things such as:
+
+ERR-AUTH-401
+ERR_AUTH_401
+err auth 401
+
+
+v4.18.3
+4.18.3
+version 4.18.3
+
+Don't rewrite everything with an LLM.
+
+Use deterministic extraction/normalization for:
+
+error codes
+versions
+ticket IDs
+incident IDs
+service names
+
+Then boost matching structured fields.
+
+7. Only upgrade MiniLM if candidate recall proves MiniLM is the bottleneck
+
+Current dense retrieval uses:
+
+all-MiniLM-L6-v2
+384 dimensions
+
+It's intentionally lightweight, but there are much stronger retrieval encoders.
+
+However, don't swap it yet.
+
+If you find:
+
+Dense Recall@100 = 90%+
+
+then MiniLM is finding the right docs. The problem is ranking.
+
+Changing embeddings won't give you the best ROI.
+
+But if:
+
+Dense Recall@100 = 50–60%
+
+then run a bakeoff.
+
+Compare maybe 2–3 local retrieval-focused encoders and record:
+
+MRR@10
+nDCG@10
+Recall@100
+embedding throughput
+query latency
+RAM
+vector size
+index size
+
+Then pick the best engineering tradeoff.
+
+8. Add document-level deduplication earlier
+
+Your system retrieves chunks.
+
+As soon as SaaSBench becomes multi-chunk, one document can occupy multiple candidate slots.
+
+You don't want:
+
+rank 1 → doc A chunk 3
+rank 2 → doc A chunk 1
+rank 3 → doc A chunk 4
+rank 4 → actual second-best doc
+
+For search ranking, collapse chunks intelligently to documents before final top-k.
+
+Possible document score:
+
+best chunk
++
+small bonus for multiple supporting chunks
+
+rather than allowing one document to flood the list.
+
+9. Improve RAG context selection independently from search ranking
+
+Once retrieval improves, don't simply send the top six chunks to Llama.
+
+Use:
+
+top candidates
+↓
+cross encoder
+↓
+document dedup
+↓
+diversity selection
+↓
+evidence threshold
+↓
+context budget
+
+For a multi-document question, you may want evidence from 2–3 documents rather than six chunks from one document.
+
+This improves answer quality even if retrieval MRR remains unchanged.
+
+10. Add confidence-based refusal
+
+For RAG, weak retrieval can produce hallucinations even when MRR is acceptable.
+
+Use tune data to investigate signals such as:
+
+top reranker score
+top1 - top2 margin
+candidate agreement
+BM25/dense overlap
+
+Then define a conservative answerability policy.
+
+If evidence confidence is weak:
+
+refuse
+
+rather than generate.
+
+This improves refusal precision/groundedness, though not MRR.
+
+The sequence I would use
+1. Candidate recall + oracle ceiling
+                ↓
+2. Fix min-max tail-drop
+                ↓
+3. RRF / weighted RRF
+                ↓
+4. Union → cross-encoder rerank
+                ↓
+5. Query-aware router
+                ↓
+6. Structured BM25 / exact-field boosts
+                ↓
+7. Re-evaluate
+                ↓
+8. Encoder bakeoff only if recall is weak
+
+Do not do all eight at once.
+
+After every step:
+
+tune split
+↓
+compare against baseline
+↓
+paired bootstrap
+↓
+keep or revert
+
+Then after the architecture is frozen, evaluate the 895 held-out queries once.
+
+The metrics I would optimize
+
+For IndexFlow's user experience, prioritize them in roughly this order:
+
+MRR@10 — did the first useful result appear early?
+
+Success@1 — is the first result actually right?
+
+nDCG@10 — is the entire top-10 ranking good?
+
+Recall@10/100 — did the retrieval stage find enough relevant evidence?
+
+And never optimize one alone. For example, a router might raise MRR while destroying recall.
+
+The most promising combination for your current system is probably:
+
+structured BM25
+       +
+MiniLM dense
+       ↓
+candidate union
+       ↓
+query-aware RRF/router
+       ↓
+BGE cross-encoder
+       ↓
+document dedup
+       ↓
+top results
